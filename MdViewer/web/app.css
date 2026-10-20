@@ -210,6 +210,21 @@ body.dragging iframe { pointer-events: none; }
   border-top: 1px solid var(--line); background: var(--chrome); color: var(--muted); font-size: 12px;
 }
 .palette-foot kbd { margin-right: 3px; }
+.palette li.note { padding: 4px 12px 6px; color: var(--muted); font-size: 12.5px; cursor: default; }
+.palette li.hit .t { flex: 1 1 auto; max-width: none; font-weight: 400; }
+.palette li.hit .s { flex: none; max-width: 38%; }
+.palette li.hit mark { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--fg); border-radius: 3px; padding: 0 1px; }
+
+/* ---------- find in page ---------- */
+.findbar {
+  position: absolute; top: 10px; right: 24px; z-index: 5;
+  display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 10px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow);
+  animation: pop .1s ease-out;
+}
+.findbar input { width: 210px; height: 28px; border: 0; outline: none; background: none; color: var(--fg); font: inherit; }
+.findbar .count { min-width: 56px; padding: 0 6px; color: var(--muted); font-size: 12.5px; text-align: right; white-space: nowrap; }
+.findbar.none .count { color: #d1453b; }
 
 /* ---------- menus ---------- */
 .menu {

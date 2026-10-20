@@ -11,6 +11,7 @@ using Markdig;
 using Markdig.Extensions.AutoIdentifiers;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
+using Microsoft.Win32;
 
 namespace MdViewer;
 
@@ -32,6 +33,8 @@ sealed class MainForm : Form
     static readonly Regex PathToken = new(
         @"(?:[A-Za-z]:[\\/]|\\\\)?[^\s""'<>|*?()\[\]`]*?\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)\b",
         RegexOptions.IgnoreCase);
+    // A listed extension at the end of a word; paths with spaces are found by trying starts to its left.
+    static readonly Regex ExtensionEnd = new(@"\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)\b", RegexOptions.IgnoreCase);
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
         { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
@@ -52,6 +55,8 @@ sealed class MainForm : Form
     uint lastClipboardSeq;
     int clipboardReadAttempts;
     List<string> knownFiles = []; // relative paths from the last tree scan, for file-name lookups
+    readonly System.Windows.Forms.Timer saveDelay = new() { Interval = 1000 }; // batches reading-position saves
+    bool systemDark = Themes.SystemIsDark();
 
     public MainForm(string? startPath)
     {
@@ -68,6 +73,10 @@ sealed class MainForm : Form
         watcher.Deleted += OnFsEvent;
         watcher.Renamed += OnFsEvent;
         clipboardDelay.Tick += (_, _) => ReadClipboard();
+        saveDelay.Tick += (_, _) => { saveDelay.Stop(); settings.Save(); };
+        FormClosing += (_, _) => { if (saveDelay.Enabled) settings.Save(); };
+        SystemEvents.UserPreferenceChanged += OnSystemPreference;
+        Disposed += (_, _) => SystemEvents.UserPreferenceChanged -= OnSystemPreference;
         debounce.Tick += (_, _) =>
         {
             debounce.Stop();
@@ -80,6 +89,7 @@ sealed class MainForm : Form
         {
             ApplyTitleBar();
             ListenForOpenRequests();
+            PruneMissingDirs();
             await InitAsync(startPath);
         };
     }
@@ -252,6 +262,16 @@ sealed class MainForm : Form
                     Post(new { type = "history", items = HistoryItems() });
                 }
                 break;
+            case "scroll":
+                if (FromRel(Str("rel")) is { } read
+                    && settings.History.FindIndex(h => h.Path.Equals(read, StringComparison.OrdinalIgnoreCase)) is >= 0 and var at)
+                {
+                    settings.History[at] = settings.History[at] with { Scroll = msg.TryGetProperty("y", out var y) && y.TryGetInt32(out var px) ? px : 0 };
+                    saveDelay.Stop();
+                    saveDelay.Start();
+                }
+                break;
+            case "search": Search(Str("q"), Str("id")); break;
             case "clearHistory":
                 settings.ClearHistory();
                 Post(new { type = "history", items = HistoryItems() });
@@ -278,8 +298,90 @@ sealed class MainForm : Form
 
     // The reading history as the web app shows it: full path, when, and whether the file is still there.
     object[] HistoryItems() => settings.History
-        .Select(h => (object)new { path = h.Path, when = new DateTimeOffset(h.When).ToUnixTimeMilliseconds(), exists = File.Exists(h.Path) })
+        .Select(h => (object)new { path = h.Path, when = new DateTimeOffset(h.When).ToUnixTimeMilliseconds(), scroll = h.Scroll, exists = File.Exists(h.Path) })
         .ToArray();
+
+    // ---------- full-text search ----------
+
+    const int MaxHits = 300;
+
+    // Case-insensitive search through every Markdown file of the last tree scan, off the UI thread.
+    // Each hit carries its occurrence number in the file so the page can jump to that same match.
+    void Search(string query, string id)
+    {
+        var (files, dir) = (knownFiles, root);
+        Task.Run(() =>
+        {
+            var hits = new List<object>();
+            int total = 0, fileCount = 0;
+            if (query.Trim().Length > 0)
+            {
+                foreach (var rel in files.Where(IsMarkdown))
+                {
+                    string[] lines;
+                    try { lines = File.ReadAllLines(Path.Combine(dir, rel.Replace('/', '\\'))); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+                    int nth = 0, fileHits = 0;
+                    bool inDiagram = false;
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        // Text inside a diagram is drawn as SVG, which the page's find does not count;
+                        // such hits jump to the next match after the diagram.
+                        var fence = lines[i].TrimStart();
+                        if (fence.StartsWith("```mermaid") || fence.StartsWith("~~~mermaid")) inDiagram = true;
+                        else if (inDiagram && (fence.StartsWith("```") || fence.StartsWith("~~~"))) inDiagram = false;
+                        for (int at = lines[i].IndexOf(query, StringComparison.OrdinalIgnoreCase); at >= 0;
+                             at = lines[i].IndexOf(query, at + query.Length, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (fileHits++ == 0) fileCount++;
+                            if (total++ < MaxHits) hits.Add(new { rel, line = i + 1, nth, snippet = Snippet(lines[i], at, query.Length) });
+                            if (!inDiagram) nth++;
+                        }
+                    }
+                }
+            }
+            if (IsHandleCreated) BeginInvoke(() => Post(new { type = "searchResults", id, hits, total, files = fileCount }));
+        });
+    }
+
+    // The hit with some text on each side, split so the page can mark the match.
+    static object Snippet(string line, int at, int length)
+    {
+        int start = Math.Max(0, at - 30), end = Math.Min(line.Length, at + length + 90);
+        return new
+        {
+            before = (start > 0 ? "…" : "") + line[start..at].TrimStart(),
+            match = line.Substring(at, length),
+            after = line[(at + length)..end] + (end < line.Length ? "…" : ""),
+        };
+    }
+
+    // ---------- system theme, remembered folders ----------
+
+    // Follows Windows switching between light and dark while the theme is "auto".
+    void OnSystemPreference(object? sender, UserPreferenceChangedEventArgs e)
+    {
+        var dark = Themes.SystemIsDark();
+        if (e.Category != UserPreferenceCategory.General || dark == systemDark || !IsHandleCreated) return;
+        systemDark = dark;
+        BeginInvoke(() =>
+        {
+            if (settings.Theme == Themes.Auto) ApplyTheme(Themes.Auto);
+            Post(new { type = "system", dark });
+        });
+    }
+
+    // Forgets remembered folders that no longer exist; checked in the background since a folder on a
+    // disconnected network drive can take seconds to answer.
+    void PruneMissingDirs()
+    {
+        var dirs = settings.Dirs.ToList();
+        Task.Run(() =>
+        {
+            var missing = dirs.Where(d => !Directory.Exists(d)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (missing.Count > 0 && IsHandleCreated) BeginInvoke(() => { settings.Dirs.RemoveAll(missing.Contains); settings.Save(); });
+        });
+    }
 
     void Post(object message)
     {
@@ -378,6 +480,7 @@ sealed class MainForm : Form
     {
         var candidates = new[] { text }
             .Concat(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Concat(SpacedCandidates(text))
             .Concat(PathToken.Matches(text).Select(m => m.Value))
             .ToList();
         RememberDirsIn(candidates);
@@ -398,6 +501,30 @@ sealed class MainForm : Form
             if (hits.Count > 1) return (null, hits);
         }
         return (null, []);
+    }
+
+    // For each listed extension inside a sentence, the stretches that end there and contain a space,
+    // starting at a drive letter, a UNC prefix or a word boundary, longest first: "see C:\My Docs\a.md now"
+    // yields "see C:\My Docs\a.md", "C:\My Docs\a.md", ... Only ones that exist are used.
+    static IEnumerable<string> SpacedCandidates(string text)
+    {
+        foreach (var line in text.Split('\n'))
+        {
+            foreach (Match ext in ExtensionEnd.Matches(line))
+            {
+                var starts = new List<int>();
+                for (int i = 0; i < ext.Index; i++)
+                {
+                    if (char.IsWhiteSpace(line[i])) continue;
+                    bool afterBreak = i == 0 || char.IsWhiteSpace(line[i - 1]) || line[i - 1] is '"' or '\'' or '`' or '(' or '「' or '：';
+                    bool drive = i + 2 < line.Length && char.IsAsciiLetter(line[i]) && line[i + 1] == ':' && line[i + 2] is '\\' or '/';
+                    if (afterBreak || drive) starts.Add(i);
+                }
+                foreach (var start in starts.TakeLast(12))
+                    if (line[start..(ext.Index + ext.Length)] is var candidate && candidate.Any(char.IsWhiteSpace))
+                        yield return candidate;
+            }
+        }
     }
 
     // Any absolute folder in the copied text, or the folder of any absolute file path, is remembered
@@ -569,7 +696,7 @@ sealed class MainForm : Form
                 return (Encoding.UTF8.GetBytes(html), "text/html; charset=utf-8");
             case "app.css" or "zoom.css":
                 return (Encoding.UTF8.GetBytes(Resource(name)), "text/css; charset=utf-8");
-            case "app.js" or "zoom.js":
+            case "app.js" or "zoom.js" or "hljs.min.js" or "mermaid.min.js":
                 return (Encoding.UTF8.GetBytes(Resource(name)), "text/javascript; charset=utf-8");
             default:
                 return null;

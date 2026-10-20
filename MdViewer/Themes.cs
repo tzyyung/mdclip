@@ -179,8 +179,9 @@ sealed class ThemeSettings
     // Each file is stored once; reading it again moves it to the front.
     public void RememberFile(string path)
     {
+        var scroll = History.Find(h => h.Path.Equals(path, StringComparison.OrdinalIgnoreCase))?.Scroll ?? 0;
         History.RemoveAll(h => h.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
-        History.Insert(0, new HistoryEntry(path, DateTime.Now));
+        History.Insert(0, new HistoryEntry(path, DateTime.Now, scroll));
         if (History.Count > MaxHistory) History.RemoveRange(MaxHistory, History.Count - MaxHistory);
         Save();
     }
@@ -192,15 +193,17 @@ sealed class ThemeSettings
     }
 }
 
-sealed record HistoryEntry(string Path, DateTime When)
+// Scroll is the last reading position in pixels. Stored as "when|scroll|path"; older "when|path" lines still load.
+sealed record HistoryEntry(string Path, DateTime When, int Scroll = 0)
 {
-    public override string ToString() => $"{When:yyyy-MM-ddTHH:mm:ss}|{Path}";
+    public override string ToString() => $"{When:yyyy-MM-ddTHH:mm:ss}|{Scroll}|{Path}";
 
     public static HistoryEntry? Parse(string value)
     {
-        var parts = value.Split('|', 2);
-        return parts.Length == 2 && parts[1].Length > 0 && DateTime.TryParse(parts[0], out var when)
-            ? new HistoryEntry(parts[1], when)
-            : null;
+        var parts = value.Split('|', 3);
+        if (parts.Length < 2 || !DateTime.TryParse(parts[0], out var when)) return null;
+        if (parts.Length == 3 && int.TryParse(parts[1], out var scroll))
+            return parts[2].Length > 0 ? new HistoryEntry(parts[2], when, scroll) : null;
+        return parts[1].Length > 0 ? new HistoryEntry(parts[1], when) : null;
     }
 }

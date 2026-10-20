@@ -3,3 +3,4 @@ obj/
 app/
 .vs/
 *.user
+dist/

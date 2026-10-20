@@ -70,3 +70,25 @@ pre.plain { border-left-color: var(--border); white-space: pre; }
 .flash { animation: flash 1.2s ease-out; }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 22%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
+
+/* code colours (highlight.js tokens), drawn from the theme so every palette gets its own */
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag, .hljs-meta .hljs-keyword { color: var(--h4); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-attr-value, .hljs-selector-attr, .hljs-template-tag { color: var(--h3); }
+.hljs-number, .hljs-symbol, .hljs-bullet, .hljs-link { color: var(--td-strong); }
+.hljs-title, .hljs-section, .hljs-selector-id { color: var(--h2); }
+.hljs-title.class_, .hljs-type, .hljs-built_in, .hljs-selector-class, .hljs-tag .hljs-name { color: var(--h1); }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-property, .hljs-params { color: var(--em); }
+.hljs-comment, .hljs-quote, .hljs-meta { color: var(--muted); font-style: italic; }
+.hljs-deletion { color: #d1453b; }
+.hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 700; }
+
+/* Mermaid diagrams */
+.mermaid.figure { margin: 1.4em 0; padding: 16px; text-align: center; overflow: auto;
+                  border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.mermaid.figure svg { max-width: 100%; height: auto; }
+.mermaid.figure.error { text-align: left; border-color: #d1453b; }
+.mermaid.figure .msg { color: #d1453b; font-weight: 600; margin-bottom: .6em; }
+
+/* find in page */
+::highlight(find) { background-color: color-mix(in srgb, var(--mark) 70%, transparent); color: inherit; }
+::highlight(find-cur) { background-color: #ff9632; color: #000; }

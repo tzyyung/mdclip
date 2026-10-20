@@ -53,6 +53,13 @@
 
 <main class="doc">
   <iframe id="frame" title="文件內容"></iframe>
+  <div class="findbar" id="findbar" role="search" hidden>
+    <input id="find-input" placeholder="在本篇中尋找" spellcheck="false" autocomplete="off">
+    <span class="count" id="find-count"></span>
+    <button id="find-prev" class="icon sm" title="上一個 (Shift+Enter)"></button>
+    <button id="find-next" class="icon sm" title="下一個 (Enter)"></button>
+    <button id="find-close" class="icon sm" title="關閉 (Esc)"></button>
+  </div>
   <div class="empty" id="empty" hidden>
     <h2>選一份文件開始閱讀</h2>
     <p>從左側檔案清單點選，或用快速開啟搜尋檔名、直接貼上路徑。</p>
@@ -76,12 +83,7 @@
   <div class="palette-box" role="dialog" aria-label="快速開啟">
     <input id="palette-input" spellcheck="false" autocomplete="off" placeholder="輸入檔名搜尋、貼上路徑，或用 # 跳到本篇標題">
     <ul id="palette-list" role="listbox"></ul>
-    <div class="palette-foot">
-      <span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span>
-      <span><kbd>Enter</kbd> 開啟</span>
-      <span><kbd>#</kbd> 本篇標題</span>
-      <span><kbd>Esc</kbd> 關閉</span>
-    </div>
+    <div class="palette-foot" id="palette-foot"></div>
   </div>
 </div>
 <div class="menu" id="theme-menu" hidden></div>
@@ -91,6 +93,7 @@
 <div class="toast" id="toast" role="status" hidden></div>
 
 <script>/*CONFIG*/</script>
+<script src="hljs.min.js"></script>
 <script src="zoom.js"></script>
 <script src="app.js"></script>
 </body>

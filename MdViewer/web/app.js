@@ -33,6 +33,9 @@ const ICONS = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 9"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  up: '<path d="M6 15l6-6 6 6"/>',
+  down: '<path d="M6 9l6 6 6-6"/>',
+  text: '<path d="M4 6h16M4 12h10M4 18h7"/><circle cx="17.5" cy="16.5" r="3"/><path d="M20 19l2 2"/>',
 };
 const icon = (name, cls = "") =>
   `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -98,6 +101,7 @@ function applyTheme(id, save = true) {
   $("dark").innerHTML = icon(t.dark ? "sun" : "moon");
   $("dark").title = t.dark ? "切換為亮色 (Ctrl+D)" : "切換為暗色 (Ctrl+D)";
   if (save) post({ type: "theme", id });
+  if (frame.contentDocument?.querySelector(".mermaid.figure")) renderDiagrams(frame.contentDocument);
 }
 
 const toggleDark = () => applyTheme(resolveTheme(state.theme).dark ? state.lastLight : state.lastDark);
@@ -298,13 +302,14 @@ function load(rel, pending) {
   frame.contentWindow.location.replace(urlOf(rel) + (pending.hash || ""));
 }
 
-function navigate(rel, hash = "") {
+// scroll: reading position to restore; find: { q, nth } to open the find bar on that match.
+function navigate(rel, hash = "", scroll = 0, find = null) {
   if (!rel) return;
   saveScroll();
   state.hist.splice(state.at + 1);
-  state.hist.push({ rel, scroll: 0 });
+  state.hist.push({ rel, scroll });
   state.at = state.hist.length - 1;
-  load(rel, { hash, scroll: 0 });
+  load(rel, { hash, scroll, find });
 }
 
 function go(delta) {
@@ -360,8 +365,22 @@ frame.addEventListener("load", () => {
 
   const p = state.pending;
   state.pending = null;
-  if (p?.hash) scrollToHash(p.hash, false);
-  else if (p?.scroll) win.scrollTo(0, p.scroll);
+  highlightCode(doc);
+  const restore = () => {
+    if (p?.hash) scrollToHash(p.hash, false);
+    else if (p?.scroll) win.scrollTo(0, p.scroll);
+  };
+  restore();
+  // Diagrams change the page height, so the position is restored again once they are drawn,
+  // unless the reader has moved in the meantime.
+  let moved = false;
+  for (const type of ["wheel", "keydown", "pointerdown"]) doc.addEventListener(type, () => { moved = true; }, { once: true, passive: true });
+  renderDiagrams(doc).then((drawn) => {
+    if (doc !== frame.contentDocument) return;
+    if (drawn && !moved) restore();
+    if (p?.find) openFind(p.find.q, p.find.nth);
+    else if (!$("findbar").hidden) runFind(-1);
+  });
 
   post({ type: "opened", rel }); // the host remembers the folder and adds the file to the reading history
   updateChrome();
@@ -388,8 +407,14 @@ function hookDoc(doc) {
     if (rel === state.current) { if (url.hash) scrollToHash(url.hash, true); return; }
     navigate(rel, url.hash);
   });
-  let ticking = false;
+  let ticking = false, report = 0;
   doc.defaultView.addEventListener("scroll", () => {
+    // The host keeps the last position of each file in the reading history.
+    clearTimeout(report);
+    report = setTimeout(() => {
+      if (doc === frame.contentDocument && state.current && !isImage(state.current))
+        post({ type: "scroll", rel: state.current, y: Math.round(doc.defaultView.scrollY) });
+    }, 700);
     if (ticking) return;
     ticking = true;
     requestAnimationFrame(() => { ticking = false; updateActiveHeading(); });
@@ -465,12 +490,29 @@ $("toc-list").addEventListener("click", (e) => {
 
 // ---------- quick open ----------
 
-const pal = { items: [], sel: 0, pendingId: null };
+// mode "files": file names, pasted paths, # headings; mode "text": the contents of every document.
+const pal = { items: [], sel: 0, pendingId: null, pendingScroll: 0, mode: "files", note: "", searchId: null, timer: 0 };
 
-function openPalette(prefix = "") {
+const PALETTE_MODES = {
+  files: {
+    placeholder: "輸入檔名搜尋、貼上路徑，或用 # 跳到本篇標題",
+    foot: "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>Enter</kbd> 開啟</span><span><kbd>#</kbd> 本篇標題</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F</kbd> 搜尋內文</span>",
+  },
+  text: {
+    placeholder: "搜尋所有文件的內文",
+    foot: "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>Enter</kbd> 開啟並跳到那一處</span><span><kbd>Ctrl</kbd><kbd>P</kbd> 改搜檔名</span>",
+  },
+};
+
+function openPalette(prefix = "", mode = "files") {
   closeMenus();
-  $("palette").hidden = false;
   const input = $("palette-input");
+  if (!$("palette").hidden && pal.mode === mode && !prefix) { input.select(); return; }
+  pal.mode = mode;
+  $("palette").hidden = false;
+  $("palette").dataset.mode = mode;
+  input.placeholder = PALETTE_MODES[mode].placeholder;
+  $("palette-foot").innerHTML = PALETTE_MODES[mode].foot;
   input.value = prefix;
   input.focus();
   updatePalette();
@@ -479,6 +521,8 @@ function openPalette(prefix = "") {
 function closePalette() {
   $("palette").hidden = true;
   pal.pendingId = null;
+  pal.searchId = null;
+  clearTimeout(pal.timer);
   focusDoc();
 }
 
@@ -515,6 +559,8 @@ function matchFile(f, q) {
 const markIdx = (s, idx) => { const set = new Set(idx); return [...s].map((c, i) => (set.has(i) ? `<mark>${esc(c)}</mark>` : esc(c))).join(""); };
 
 function updatePalette() {
+  if (pal.mode === "text") { updateTextSearch(); return; }
+  pal.note = "";
   const q = $("palette-input").value.trim();
   const items = [];
   if (q.startsWith("#")) {
@@ -530,7 +576,7 @@ function updatePalette() {
       if (!items.length) items.push({ kind: "path", text: q, icon: "link", title: "當作路徑開啟", sub: esc(q) });
     } else {
       for (const h of state.history)
-        if (h.exists) items.push({ kind: "hist", path: h.path, icon: "clock", title: esc(baseName(h.path.replaceAll("\\", "/"))), sub: esc(histDir(h.path) + " · " + ago(h.when)) });
+        if (h.exists) items.push({ kind: "hist", path: h.path, scroll: h.scroll, icon: "clock", title: esc(baseName(h.path.replaceAll("\\", "/"))), sub: esc(histDir(h.path) + " · " + ago(h.when)) });
     }
   }
   pal.items = items;
@@ -542,9 +588,12 @@ function renderPalette(message) {
   const list = $("palette-list");
   if (message) { list.innerHTML = message; return; }
   const q = $("palette-input").value.trim();
-  list.innerHTML = pal.items.length
-    ? pal.items.map((it, i) => `<li class="${i === pal.sel ? "sel" : ""}" data-i="${i}" role="option">${icon(it.icon, "ico")}<span class="t">${it.title}</span><span class="s">${it.sub}</span></li>`).join("")
-    : `<li class="hint">${q.startsWith("#") ? "這篇沒有符合的標題" : q ? "沒有符合的檔案" : "輸入檔名開始搜尋，或貼上路徑"}</li>`;
+  const empty = pal.mode === "text"
+    ? (q ? "沒有文件包含這段文字" : "輸入文字，搜尋這個資料夾裡所有文件的內容")
+    : q.startsWith("#") ? "這篇沒有符合的標題" : q ? "沒有符合的檔案" : "輸入檔名開始搜尋，或貼上路徑";
+  list.innerHTML = (pal.note ? `<li class="note">${pal.note}</li>` : "") + (pal.items.length
+    ? pal.items.map((it, i) => `<li class="${it.kind}${i === pal.sel ? " sel" : ""}" data-i="${i}" role="option">${icon(it.icon, "ico")}<span class="t">${it.title}</span><span class="s">${it.sub}</span></li>`).join("")
+    : `<li class="hint">${empty}</li>`);
   list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 }
 
@@ -552,9 +601,15 @@ function choose(it) {
   if (!it) return;
   if (it.kind === "file") { closePalette(); navigate(it.rel); }
   else if (it.kind === "heading") { closePalette(); scrollToHash(it.id, true); }
-  else if (it.kind === "hist") { closePalette(); openHistory(it.path); }
+  else if (it.kind === "hist") { closePalette(); openHistory(it.path, it.scroll); }
+  else if (it.kind === "hit") {
+    closePalette();
+    if (it.rel === state.current) openFind(it.q, it.nth);
+    else navigate(it.rel, "", 0, { q: it.q, nth: it.nth });
+  }
   else if (it.kind === "path") {
     pal.pendingId = String(Date.now());
+    pal.pendingScroll = 0;
     renderPalette(`<li class="hint">開啟中…</li>`);
     post({ type: "resolve", text: it.text, id: pal.pendingId });
   }
@@ -568,7 +623,215 @@ function onResolved(m) {
     return;
   }
   if (!$("palette").hidden) closePalette();
-  if (m.rel) navigate(m.rel);
+  if (m.rel) navigate(m.rel, "", pal.pendingScroll);
+}
+
+// ---------- full-text search ----------
+
+function updateTextSearch() {
+  clearTimeout(pal.timer);
+  const q = $("palette-input").value;
+  pal.items = [];
+  pal.note = "";
+  pal.searchId = null;
+  if (!q.trim()) { renderPalette(); return; }
+  renderPalette(`<li class="hint">搜尋中…</li>`);
+  pal.timer = setTimeout(() => {
+    pal.searchId = String(Date.now());
+    post({ type: "search", q, id: pal.searchId });
+  }, 220);
+}
+
+function onSearchResults(m) {
+  if (m.id !== pal.searchId || $("palette").hidden) return;
+  const q = $("palette-input").value;
+  pal.items = m.hits.map((h) => ({
+    kind: "hit", rel: h.rel, nth: h.nth, q, icon: "file",
+    title: `${esc(h.snippet.before)}<mark>${esc(h.snippet.match)}</mark>${esc(h.snippet.after)}`,
+    sub: esc(`${h.rel}:${h.line}`),
+  }));
+  pal.note = m.total ? `${m.total} 個結果，在 ${m.files} 份文件裡${m.total > m.hits.length ? `（只列出前 ${m.hits.length} 個）` : ""}` : "";
+  pal.sel = 0;
+  renderPalette();
+}
+
+// ---------- find in page ----------
+
+// Matches are painted with the CSS Custom Highlight API, so the document's DOM is never changed.
+const finder = { ranges: [], i: -1, timer: 0 };
+
+function openFind(q, nth) {
+  $("findbar").hidden = false;
+  const input = $("find-input");
+  if (q != null) input.value = q;
+  else {
+    const sel = frame.contentWindow?.getSelection()?.toString().trim();
+    if (sel && sel.length < 200 && !sel.includes("\n")) input.value = sel;
+    input.focus();
+    input.select();
+  }
+  runFind(nth ?? 0);
+}
+
+function closeFind() {
+  $("findbar").hidden = true;
+  clearFind();
+  focusDoc();
+}
+
+function clearFind() {
+  const hl = frame.contentWindow?.CSS?.highlights;
+  hl?.delete("find");
+  hl?.delete("find-cur");
+  finder.ranges = [];
+  finder.i = -1;
+}
+
+// Finds every match of the query (case-insensitive, across inline formatting) and moves to match nth;
+// nth -1 only paints them, for when the page reloads under an open find bar.
+function runFind(nth = 0) {
+  clearFind();
+  const q = $("find-input").value.toLowerCase();
+  const doc = frame.contentDocument, win = frame.contentWindow;
+  const main = doc?.querySelector("main");
+  if (q && main && !doc.body.classList.contains("image-page") && win.Highlight) {
+    const nodes = [];
+    let text = "";
+    const walker = doc.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.parentElement.closest("style, script, svg") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    for (let n; (n = walker.nextNode()); ) { nodes.push({ n, start: text.length }); text += n.data; }
+    const hay = text.toLowerCase();
+    // The node holding character `off`; an end offset may sit at the very end of the previous node.
+    const at = (off, isEnd) => {
+      let lo = 0, hi = nodes.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (isEnd ? nodes[mid].start < off : nodes[mid].start <= off) lo = mid; else hi = mid - 1;
+      }
+      return [nodes[lo].n, off - nodes[lo].start];
+    };
+    for (let i = hay.indexOf(q); i >= 0 && finder.ranges.length < 5000; i = hay.indexOf(q, i + q.length)) {
+      const r = doc.createRange();
+      r.setStart(...at(i, false));
+      r.setEnd(...at(i + q.length, true));
+      finder.ranges.push(r);
+    }
+    if (finder.ranges.length) win.CSS.highlights.set("find", new win.Highlight(...finder.ranges));
+  }
+  if (nth >= 0 && finder.ranges.length) gotoFind(Math.min(nth, finder.ranges.length - 1));
+  else updateFindCount();
+}
+
+function gotoFind(i) {
+  const n = finder.ranges.length;
+  if (!n) return;
+  finder.i = ((i % n) + n) % n;
+  const r = finder.ranges[finder.i], win = frame.contentWindow;
+  win.CSS.highlights.set("find-cur", new win.Highlight(r));
+  const box = r.getBoundingClientRect();
+  if (box.top < 70 || box.bottom > win.innerHeight - 50)
+    r.startContainer.parentElement.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+  updateFindCount();
+}
+
+function updateFindCount() {
+  const n = finder.ranges.length, q = $("find-input").value;
+  $("find-count").textContent = !q ? "" : !n ? "沒有結果" : finder.i < 0 ? `${n} 個` : `${finder.i + 1} / ${n}`;
+  $("findbar").classList.toggle("none", !!q && !n);
+}
+
+$("find-input").addEventListener("input", () => {
+  clearTimeout(finder.timer);
+  finder.timer = setTimeout(() => runFind(0), 120);
+});
+$("find-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") gotoFind(finder.i + (e.shiftKey ? -1 : 1));
+  else if (e.key === "Escape") closeFind();
+  else return;
+  e.preventDefault();
+  e.stopPropagation();
+});
+$("find-prev").onclick = () => gotoFind(finder.i - 1);
+$("find-next").onclick = () => gotoFind(finder.i + 1);
+$("find-close").onclick = closeFind;
+
+// ---------- code colours and diagrams ----------
+
+function highlightCode(doc) {
+  if (!window.hljs || doc.body.classList.contains("image-page")) return;
+  for (const code of doc.querySelectorAll("pre > code[class*='language-']")) {
+    const lang = /language-([\w+#-]+)/.exec(code.className)?.[1].toLowerCase();
+    if (!lang || lang === "mermaid" || !hljs.getLanguage(lang)) continue;
+    code.innerHTML = hljs.highlight(code.textContent, { language: lang, ignoreIllegals: true }).value;
+    code.classList.add("hljs");
+  }
+}
+
+let mermaidReady = null;
+let diagramSeq = 0;
+
+// Mermaid (2.5 MB) loads only when a document has a diagram.
+function loadMermaid() {
+  return (mermaidReady ??= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "mermaid.min.js";
+    script.onload = () => resolve(window.mermaid);
+    script.onerror = () => { mermaidReady = null; reject(new Error("無法載入 Mermaid")); };
+    document.head.append(script);
+  }));
+}
+
+// Diagram colours come from the document's own theme variables.
+function mermaidConfig(doc) {
+  const css = doc.defaultView.getComputedStyle(doc.documentElement);
+  const v = (name) => css.getPropertyValue("--" + name).trim();
+  return {
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: "base",
+    themeVariables: {
+      darkMode: resolveTheme(state.theme).dark,
+      background: v("bg"), fontFamily: doc.defaultView.getComputedStyle(doc.body).fontFamily, fontSize: "15px",
+      primaryColor: v("accent-soft"), primaryBorderColor: v("accent"), primaryTextColor: v("fg"),
+      secondaryColor: v("code-bg"), tertiaryColor: v("pre-bg"), lineColor: v("muted"), textColor: v("fg"),
+      edgeLabelBackground: v("bg"), noteBkgColor: v("quote-bg"), noteBorderColor: v("quote-bar"), noteTextColor: v("fg"),
+    },
+  };
+}
+
+// Turns ```mermaid blocks into drawn diagrams (again, after a theme change). Resolves true when it drew any.
+async function renderDiagrams(doc) {
+  if (!doc?.body) return false;
+  for (const el of doc.querySelectorAll("pre > code.language-mermaid, pre.mermaid, div.mermaid:not(.figure)")) {
+    const fig = doc.createElement("div");
+    fig.className = "mermaid figure";
+    fig.dataset.src = el.textContent;
+    (el.closest("pre") ?? el).replaceWith(fig);
+  }
+  const figs = [...doc.querySelectorAll(".mermaid.figure")];
+  if (!figs.length) return false;
+  let mermaid;
+  try { mermaid = await loadMermaid(); } catch (err) { figs.forEach((f) => showDiagramError(f, err)); return false; }
+  mermaid.initialize(mermaidConfig(doc));
+  for (const fig of figs) {
+    const id = "mmd" + ++diagramSeq;
+    try {
+      const { svg } = await mermaid.render(id, fig.dataset.src);
+      fig.classList.remove("error");
+      fig.innerHTML = svg;
+    } catch (err) {
+      showDiagramError(fig, err);
+    } finally {
+      document.getElementById("d" + id)?.remove(); // mermaid leaves its scratch element behind on errors
+    }
+  }
+  return true;
+}
+
+function showDiagramError(fig, err) {
+  fig.classList.add("error");
+  fig.innerHTML = `<div class="msg">這張 Mermaid 圖畫不出來：${esc(err?.message ?? err)}</div><pre>${esc(fig.dataset.src)}</pre>`;
 }
 
 $("palette-input").addEventListener("input", updatePalette);
@@ -642,7 +905,7 @@ $("theme-menu").addEventListener("click", (e) => {
 // Path relative to the open folder when it lives there, otherwise the full path, without the file name.
 function histDir(path) {
   const dir = path.slice(0, path.lastIndexOf("\\"));
-  const root = cfg.root.replace(/\$/, "");
+  const root = cfg.root.replace(/\\$/, "");
   if (dir.toLowerCase() === root.toLowerCase()) return cfg.name;
   if (dir.toLowerCase().startsWith(root.toLowerCase() + "\\")) return dir.slice(root.length + 1).replaceAll("\\", "/");
   return dir;
@@ -659,16 +922,18 @@ function ago(when) {
 }
 
 // Files in the open folder navigate directly; anything else goes through the host, which switches folders.
-function openHistory(path) {
-  const root = cfg.root.replace(/\$/, "");
-  if (path.toLowerCase().startsWith(root.toLowerCase() + "\\")) { navigate(path.slice(root.length + 1).replaceAll("\\", "/")); return; }
+// Opens at the last reading position.
+function openHistory(path, scroll = 0) {
+  const root = cfg.root.replace(/\\$/, "");
+  if (path.toLowerCase().startsWith(root.toLowerCase() + "\\")) { navigate(path.slice(root.length + 1).replaceAll("\\", "/"), "", scroll); return; }
   pal.pendingId = String(Date.now());
+  pal.pendingScroll = scroll;
   post({ type: "resolve", text: path, id: pal.pendingId });
 }
 
 function openHistoryMenu() {
   const menu = $("history-menu");
-  const currentPath = state.current && (cfg.root.replace(/\$/, "") + "\\" + state.current.replaceAll("/", "\\")).toLowerCase();
+  const currentPath = state.current && (cfg.root.replace(/\\$/, "") + "\\" + state.current.replaceAll("/", "\\")).toLowerCase();
   const rows = state.history.map((h, i) => {
     const name = baseName(h.path.replaceAll("\\", "/"));
     const cur = h.path.toLowerCase() === currentPath;
@@ -686,7 +951,7 @@ $("history-menu").addEventListener("click", (e) => {
   if (!b) return;
   closeMenus();
   if (b.dataset.hist === "clear") post({ type: "clearHistory" });
-  else openHistory(state.history[+b.dataset.hist].path);
+  else { const h = state.history[+b.dataset.hist]; openHistory(h.path, h.scroll); }
 });
 
 function openMoreMenu() {
@@ -881,6 +1146,9 @@ function onKey(e) {
   const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
   if (lightboxKey(e)) { /* handled by the lightbox */ }
   else if (ctrl && !e.shiftKey && (k === "p" || k === "k")) openPalette();
+  else if (ctrl && e.shiftKey && k === "f") openPalette("", "text");
+  else if (ctrl && !e.shiftKey && k === "f") openFind();
+  else if (k === "f3" && !$("findbar").hidden) gotoFind(finder.i + (e.shiftKey ? -1 : 1));
   else if (ctrl && !e.shiftKey && k === "d") toggleDark();
   else if (ctrl && !e.shiftKey && k === "h") openHistoryMenu();
   else if (ctrl && !e.shiftKey && k === "b") toggleSide();
@@ -895,6 +1163,7 @@ function onKey(e) {
   else if ((e.altKey && k === "arrowleft") || k === "browserback") go(-1);
   else if ((e.altKey && k === "arrowright") || k === "browserforward") go(1);
   else if (k === "escape" && closeMenus()) { /* closed a menu */ }
+  else if (k === "escape" && !$("findbar").hidden) closeFind();
   else if (k === "escape" && layout.zen) toggleZen();
   else return;
   e.preventDefault();
@@ -933,6 +1202,11 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
     case "history": state.history = m.items; break;
+    case "searchResults": onSearchResults(m); break;
+    case "system":
+      cfg.systemDark = m.dark;
+      if (state.theme === "auto") applyTheme("auto", false);
+      break;
   }
 });
 
@@ -950,6 +1224,9 @@ setIcon("theme", "palette");
 setIcon("more", "more");
 setIcon("change-root", "folderOpen");
 setIcon("search-ico", "search");
+setIcon("find-prev", "up");
+setIcon("find-next", "down");
+setIcon("find-close", "close");
 
 $("back").onclick = () => go(-1);
 $("forward").onclick = () => go(1);
