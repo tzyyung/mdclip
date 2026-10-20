@@ -245,7 +245,16 @@ sealed class MainForm : Form
             case "title": Text = Str("text") is { Length: > 0 } t ? $"{t} — MdViewer" : "MdViewer"; break;
             case "raise": BringToTop(); break;
             case "opened":
-                if (FromRel(Str("rel")) is { } opened) settings.RememberDir(Path.GetDirectoryName(opened)!);
+                if (FromRel(Str("rel")) is { } opened)
+                {
+                    settings.RememberDir(Path.GetDirectoryName(opened)!);
+                    settings.RememberFile(opened);
+                    Post(new { type = "history", items = HistoryItems() });
+                }
+                break;
+            case "clearHistory":
+                settings.ClearHistory();
+                Post(new { type = "history", items = HistoryItems() });
                 break;
             case "resolve":
                 var text = Str("text");
@@ -266,6 +275,11 @@ sealed class MainForm : Form
             case "external": OpenExternal(Str("url")); break;
         }
     }
+
+    // The reading history as the web app shows it: full path, when, and whether the file is still there.
+    object[] HistoryItems() => settings.History
+        .Select(h => (object)new { path = h.Path, when = new DateTimeOffset(h.When).ToUnixTimeMilliseconds(), exists = File.Exists(h.Path) })
+        .ToArray();
 
     void Post(object message)
     {
@@ -545,6 +559,7 @@ sealed class MainForm : Form
                     lastLight = settings.LastLight,
                     lastDark = settings.LastDark,
                     systemDark = Themes.SystemIsDark(),
+                    history = HistoryItems(),
                     themes = Themes.All.Select(t => new { t.Id, t.Name, t.Dark, bg = t.Hex("bg"), accent = t.Hex("accent"), h3 = t.Hex("h3") }),
                 }, Json);
                 var html = Resource("app.html")

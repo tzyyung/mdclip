@@ -127,9 +127,11 @@ sealed class ThemeSettings
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MdViewer", "theme.txt");
 
     const int MaxDirs = 200;
+    public const int MaxHistory = 30;
 
     public string Theme = Themes.Auto, LastLight = "colorful-light", LastDark = "github-dark", Root = "";
     public List<string> Dirs = [];
+    public List<HistoryEntry> History = []; // most recently read first
 
     public static ThemeSettings Load()
     {
@@ -144,6 +146,7 @@ sealed class ThemeSettings
                 else if (key == "dark") s.LastDark = value;
                 else if (key == "root") s.Root = value;
                 else if (key == "dir" && value.Length > 0) s.Dirs.Add(value);
+                else if (key == "hist" && HistoryEntry.Parse(value) is { } h) s.History.Add(h);
             }
         }
         catch (IOException) { }
@@ -156,7 +159,7 @@ sealed class ThemeSettings
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
             File.WriteAllLines(FilePath,
-                [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", .. Dirs.Select(d => $"dir={d}")]);
+                [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", .. Dirs.Select(d => $"dir={d}"), .. History.Select(h => $"hist={h}")]);
         }
         catch (IOException) { }
     }
@@ -171,5 +174,33 @@ sealed class ThemeSettings
         Dirs.Insert(0, dir);
         if (Dirs.Count > MaxDirs) Dirs.RemoveRange(MaxDirs, Dirs.Count - MaxDirs);
         Save();
+    }
+
+    // Each file is stored once; reading it again moves it to the front.
+    public void RememberFile(string path)
+    {
+        History.RemoveAll(h => h.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+        History.Insert(0, new HistoryEntry(path, DateTime.Now));
+        if (History.Count > MaxHistory) History.RemoveRange(MaxHistory, History.Count - MaxHistory);
+        Save();
+    }
+
+    public void ClearHistory()
+    {
+        History.Clear();
+        Save();
+    }
+}
+
+sealed record HistoryEntry(string Path, DateTime When)
+{
+    public override string ToString() => $"{When:yyyy-MM-ddTHH:mm:ss}|{Path}";
+
+    public static HistoryEntry? Parse(string value)
+    {
+        var parts = value.Split('|', 2);
+        return parts.Length == 2 && parts[1].Length > 0 && DateTime.TryParse(parts[0], out var when)
+            ? new HistoryEntry(parts[1], when)
+            : null;
     }
 }

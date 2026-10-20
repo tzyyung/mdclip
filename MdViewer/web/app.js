@@ -55,7 +55,7 @@ const state = {
   pending: null,        // what to do once the iframe finishes loading: { hash, scroll }
   headings: [],
   open: new Set(),      // expanded folders, per root
-  recent: [],           // recently opened files, per root
+  history: cfg.history ?? [], // files read lately, across all roots: { path, when, exists }
   theme: cfg.theme,
   lastLight: cfg.lastLight,
   lastDark: cfg.lastDark,
@@ -73,7 +73,6 @@ const fileIcon = (rel) => (isImage(rel) ? "image" : "file");
 
 function loadRootState() {
   state.open = new Set(store.get("open:" + cfg.root, []));
-  state.recent = store.get("recent:" + cfg.root, []);
   $("proj-name").textContent = cfg.name;
   $("proj-path").textContent = cfg.root;
   $("proj-path").title = cfg.root;
@@ -364,9 +363,7 @@ frame.addEventListener("load", () => {
   if (p?.hash) scrollToHash(p.hash, false);
   else if (p?.scroll) win.scrollTo(0, p.scroll);
 
-  post({ type: "opened", rel }); // the host remembers this folder for bare-file-name lookups
-  state.recent = [rel, ...state.recent.filter((r) => r !== rel)].slice(0, 12);
-  store.set("recent:" + cfg.root, state.recent);
+  post({ type: "opened", rel }); // the host remembers the folder and adds the file to the reading history
   updateChrome();
   revealInTree(rel);
 });
@@ -532,11 +529,8 @@ function updatePalette() {
         .forEach(({ f, m }) => items.push({ kind: "file", rel: f.rel, icon: fileIcon(f.rel), title: markIdx(f.name, m.nameIdx), sub: esc(f.dir || cfg.name) }));
       if (!items.length) items.push({ kind: "path", text: q, icon: "link", title: "當作路徑開啟", sub: esc(q) });
     } else {
-      const known = new Map(state.files.map((f) => [f.rel, f]));
-      for (const rel of state.recent) {
-        const f = known.get(rel);
-        if (f) items.push({ kind: "file", rel, icon: "clock", title: esc(f.name), sub: esc(f.dir || cfg.name) });
-      }
+      for (const h of state.history)
+        if (h.exists) items.push({ kind: "hist", path: h.path, icon: "clock", title: esc(baseName(h.path.replaceAll("\\", "/"))), sub: esc(histDir(h.path) + " · " + ago(h.when)) });
     }
   }
   pal.items = items;
@@ -550,7 +544,7 @@ function renderPalette(message) {
   const q = $("palette-input").value.trim();
   list.innerHTML = pal.items.length
     ? pal.items.map((it, i) => `<li class="${i === pal.sel ? "sel" : ""}" data-i="${i}" role="option">${icon(it.icon, "ico")}<span class="t">${it.title}</span><span class="s">${it.sub}</span></li>`).join("")
-    : `<li class="hint">${q.startsWith("#") ? "這篇沒有符合的標題" : q ? "沒有符合的檔案" : "輸入檔名開始搜尋"}</li>`;
+    : `<li class="hint">${q.startsWith("#") ? "這篇沒有符合的標題" : q ? "沒有符合的檔案" : "輸入檔名開始搜尋，或貼上路徑"}</li>`;
   list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 }
 
@@ -558,6 +552,7 @@ function choose(it) {
   if (!it) return;
   if (it.kind === "file") { closePalette(); navigate(it.rel); }
   else if (it.kind === "heading") { closePalette(); scrollToHash(it.id, true); }
+  else if (it.kind === "hist") { closePalette(); openHistory(it.path); }
   else if (it.kind === "path") {
     pal.pendingId = String(Date.now());
     renderPalette(`<li class="hint">開啟中…</li>`);
@@ -642,6 +637,58 @@ $("theme-menu").addEventListener("click", (e) => {
   closeMenus();
 });
 
+// ---------- reading history ----------
+
+// Path relative to the open folder when it lives there, otherwise the full path, without the file name.
+function histDir(path) {
+  const dir = path.slice(0, path.lastIndexOf("\\"));
+  const root = cfg.root.replace(/\$/, "");
+  if (dir.toLowerCase() === root.toLowerCase()) return cfg.name;
+  if (dir.toLowerCase().startsWith(root.toLowerCase() + "\\")) return dir.slice(root.length + 1).replaceAll("\\", "/");
+  return dir;
+}
+
+function ago(when) {
+  const min = Math.floor((Date.now() - when) / 60000);
+  if (min < 1) return "剛剛";
+  if (min < 60) return min + " 分鐘前";
+  if (min < 24 * 60) return Math.floor(min / 60) + " 小時前";
+  const d = new Date(when), days = Math.floor(min / 1440);
+  if (days < 7) return days === 1 ? "昨天" : days + " 天前";
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+// Files in the open folder navigate directly; anything else goes through the host, which switches folders.
+function openHistory(path) {
+  const root = cfg.root.replace(/\$/, "");
+  if (path.toLowerCase().startsWith(root.toLowerCase() + "\\")) { navigate(path.slice(root.length + 1).replaceAll("\\", "/")); return; }
+  pal.pendingId = String(Date.now());
+  post({ type: "resolve", text: path, id: pal.pendingId });
+}
+
+function openHistoryMenu() {
+  const menu = $("history-menu");
+  const currentPath = state.current && (cfg.root.replace(/\$/, "") + "\\" + state.current.replaceAll("/", "\\")).toLowerCase();
+  const rows = state.history.map((h, i) => {
+    const name = baseName(h.path.replaceAll("\\", "/"));
+    const cur = h.path.toLowerCase() === currentPath;
+    return `<button data-hist="${i}" class="hist${cur ? " cur" : ""}"${h.exists ? "" : " disabled"} title="${esc(h.path)}">` +
+      `${icon(isImage(h.path) ? "image" : "file")}<span class="hn"><span class="t">${esc(name)}</span><span class="s">${esc(h.exists ? histDir(h.path) : "檔案已不存在")}</span></span>` +
+      `<span class="tail">${ago(h.when)}</span></button>`;
+  });
+  menu.innerHTML = `<div class="label">最近讀過的檔案（最多 30 個）</div>` +
+    (rows.length ? rows.join("") + `<hr><button data-hist="clear">${icon("close")}<span>清除紀錄</span></button>` : `<div class="empty">還沒有讀過的檔案</div>`);
+  showMenu(menu, $("history"));
+}
+
+$("history-menu").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-hist]");
+  if (!b) return;
+  closeMenus();
+  if (b.dataset.hist === "clear") post({ type: "clearHistory" });
+  else openHistory(state.history[+b.dataset.hist].path);
+});
+
 function openMoreMenu() {
   const has = !!state.current;
   const item = (act, ic, label, kb = "", enabled = true) =>
@@ -678,7 +725,7 @@ $("more-menu").addEventListener("click", (e) => {
   }
 });
 
-document.addEventListener("mousedown", (e) => { if (!e.target.closest(".menu, #theme, #more")) closeMenus(); });
+document.addEventListener("mousedown", (e) => { if (!e.target.closest(".menu, #theme, #more, #history")) closeMenus(); });
 addEventListener("blur", () => setTimeout(() => { if (document.activeElement === frame) closeMenus(); }));
 
 // ---------- lightbox for images inside a document ----------
@@ -835,6 +882,7 @@ function onKey(e) {
   if (lightboxKey(e)) { /* handled by the lightbox */ }
   else if (ctrl && !e.shiftKey && (k === "p" || k === "k")) openPalette();
   else if (ctrl && !e.shiftKey && k === "d") toggleDark();
+  else if (ctrl && !e.shiftKey && k === "h") openHistoryMenu();
   else if (ctrl && !e.shiftKey && k === "b") toggleSide();
   else if (ctrl && !e.shiftKey && k === "j") toggleToc();
   else if (ctrl && !e.shiftKey && k === "o") post({ type: "pickFile" });
@@ -884,6 +932,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "open": navigate(m.rel); break;
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
+    case "history": state.history = m.items; break;
   }
 });
 
@@ -893,6 +942,7 @@ const setIcon = (id, name) => { $(id).innerHTML = icon(name); };
 setIcon("back", "back");
 setIcon("forward", "forward");
 setIcon("reload", "reload");
+setIcon("history", "clock");
 setIcon("toggle-side", "side");
 setIcon("toggle-toc", "toc");
 setIcon("toggle-zen", "zen");
@@ -904,6 +954,7 @@ setIcon("search-ico", "search");
 $("back").onclick = () => go(-1);
 $("forward").onclick = () => go(1);
 $("reload").onclick = reloadAll;
+$("history").onclick = openHistoryMenu;
 $("search").onclick = () => openPalette();
 $("toggle-side").onclick = toggleSide;
 $("toggle-toc").onclick = toggleToc;
