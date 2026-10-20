@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-Hant" data-theme="__THEME__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MdViewer</title>
+<style>/*THEMES*/</style>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="zoom.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="group">
+    <button id="back" class="icon" title="上一頁 (Alt+←)" disabled></button>
+    <button id="forward" class="icon" title="下一頁 (Alt+→)" disabled></button>
+    <button id="reload" class="icon" title="重新整理 (F5)"></button>
+  </div>
+  <nav id="crumbs" class="crumbs" aria-label="目前位置"></nav>
+  <button id="search" class="search-pill" title="快速開啟 (Ctrl+P)">
+    <span class="ico" id="search-ico"></span><span class="label">搜尋檔案或貼上路徑</span><kbd>Ctrl P</kbd>
+  </button>
+  <div class="group zoom" role="group" aria-label="文字大小">
+    <button id="zoom-out" class="icon txt" title="縮小文字 (Ctrl+-)">A−</button>
+    <button id="zoom-reset" class="pct" title="恢復 100% (Ctrl+0)">100%</button>
+    <button id="zoom-in" class="icon txt" title="放大文字 (Ctrl+=)">A+</button>
+  </div>
+  <div class="group">
+    <button id="toggle-side" class="icon" title="檔案側欄 (Ctrl+B)"></button>
+    <button id="toggle-toc" class="icon" title="本篇大綱 (Ctrl+J)"></button>
+    <button id="toggle-zen" class="icon" title="專注閱讀 (F11)"></button>
+    <span class="divider"></span>
+    <button id="dark" class="icon"></button>
+    <button id="theme" class="icon" title="主題"></button>
+    <button id="more" class="icon" title="更多"></button>
+  </div>
+</header>
+
+<aside class="side" id="side" aria-label="檔案">
+  <div class="side-head">
+    <div class="proj"><span id="proj-name"></span><span id="proj-path"></span></div>
+    <button id="change-root" class="icon sm" title="開啟資料夾 (Ctrl+Shift+O)"></button>
+  </div>
+  <div class="filter">
+    <input id="filter" placeholder="篩選檔案" spellcheck="false" autocomplete="off">
+    <div class="kinds" id="kinds" role="group" aria-label="顯示類型">
+      <button data-kind="all">全部</button><button data-kind="doc">文件</button><button data-kind="image">圖片</button>
+    </div>
+  </div>
+  <div class="tree" id="tree" role="tree"></div>
+</aside>
+<div class="resizer" id="resizer" title="拖曳調整寬度"></div>
+
+<main class="doc">
+  <iframe id="frame" title="文件內容"></iframe>
+  <div class="empty" id="empty" hidden>
+    <h2>選一份文件開始閱讀</h2>
+    <p>從左側檔案清單點選，或用快速開啟搜尋檔名、直接貼上路徑。</p>
+    <div class="acts">
+      <button class="btn primary" id="empty-search">快速開啟 <kbd>Ctrl P</kbd></button>
+      <button class="btn" id="empty-folder">開啟資料夾…</button>
+    </div>
+  </div>
+</main>
+
+<aside class="toc" id="toc" aria-label="本篇大綱">
+  <div class="toc-head">本篇大綱</div>
+  <ol id="toc-list"></ol>
+</aside>
+
+<div class="hot left" id="hot-left"></div>
+<div class="hot right" id="hot-right"></div>
+<div class="hot top" id="hot-top"></div>
+
+<div class="palette" id="palette" hidden>
+  <div class="palette-box" role="dialog" aria-label="快速開啟">
+    <input id="palette-input" spellcheck="false" autocomplete="off" placeholder="輸入檔名搜尋、貼上路徑，或用 # 跳到本篇標題">
+    <ul id="palette-list" role="listbox"></ul>
+    <div class="palette-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span>
+      <span><kbd>Enter</kbd> 開啟</span>
+      <span><kbd>#</kbd> 本篇標題</span>
+      <span><kbd>Esc</kbd> 關閉</span>
+    </div>
+  </div>
+</div>
+<div class="menu" id="theme-menu" hidden></div>
+<div class="menu" id="more-menu" hidden></div>
+<div class="lightbox" id="lightbox" role="dialog" aria-label="圖片檢視" hidden></div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script>/*CONFIG*/</script>
+<script src="zoom.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+/* Image viewer (zoom.js), used by image pages and the app's lightbox. */
+.zoom-stage { position: relative; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
+.zoom-stage.grabbing { cursor: grabbing; }
+.zoom-stage > img {
+  position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0;
+  border-radius: 2px; box-shadow: 0 6px 30px color-mix(in srgb, #000 28%, transparent);
+  /* checkerboard so transparent images stay readable on any theme */
+  background: repeating-conic-gradient(color-mix(in srgb, var(--fg) 9%, var(--bg)) 0 25%, var(--bg) 0 50%) 0 0 / 16px 16px;
+}
+.zoom-bar {
+  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 2;
+  display: flex; align-items: center; gap: 2px; padding: 4px; max-width: calc(100% - 32px);
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
+  border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 28px color-mix(in srgb, #000 22%, transparent);
+  font: 13px/1 "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", sans-serif; color: var(--fg);
+  cursor: default;
+}
+.zoom-bar button {
+  min-width: 32px; height: 30px; padding: 0 9px; border: 0; border-radius: 6px;
+  background: none; color: inherit; font: inherit; cursor: pointer; white-space: nowrap;
+}
+.zoom-bar button:hover { background: color-mix(in srgb, var(--fg) 9%, transparent); }
+.zoom-bar .pct { min-width: 60px; font-variant-numeric: tabular-nums; }
+.zoom-bar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; flex: none; }
+.zoom-bar .name { padding: 0 8px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+body.image-page { margin: 0; height: 100vh; overflow: hidden; }
+body.image-page .zoom-stage { position: fixed; inset: 0; }
