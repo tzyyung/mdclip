@@ -19,6 +19,8 @@
   <ItemGroup>
     <EmbeddedResource Include="web\*" LogicalName="%(Filename)%(Extension)" />
     <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
+    <EmbeddedResource Include="web\katex\*" LogicalName="katex/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="web\katex\fonts\*" LogicalName="katex/fonts/%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

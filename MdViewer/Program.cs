@@ -50,10 +50,18 @@ static class Program
     internal static readonly string ErrorLog = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MdViewer", "error.log");
 
+    const long MaxLogBytes = 1_000_000;
+
+    // Past 1 MB the log moves to error.old.log (replacing the previous one) and starts over.
     internal static void LogError(Exception? ex)
     {
-        try { File.AppendAllText(ErrorLog, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] pid {Environment.ProcessId}\n{ex}\n\n"); }
-        catch (IOException) { }
+        try
+        {
+            if (new FileInfo(ErrorLog) is { Exists: true, Length: > MaxLogBytes })
+                File.Move(ErrorLog, Path.ChangeExtension(ErrorLog, ".old.log"), overwrite: true);
+            File.AppendAllText(ErrorLog, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] pid {Environment.ProcessId}\n{ex}\n\n");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]

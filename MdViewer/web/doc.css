@@ -147,3 +147,7 @@ h1, h2, h3, h4 { position: relative; }
   .copy-code, .h-anchor { display: none; }
   table { display: table; overflow: visible; }
 }
+
+/* math (KaTeX) */
+.math.typeset { color: var(--fg); }
+div.math { margin: 1em 0; overflow-x: auto; overflow-y: hidden; }

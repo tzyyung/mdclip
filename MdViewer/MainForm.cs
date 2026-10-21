@@ -39,8 +39,9 @@ sealed class MainForm : Form
         RegexOptions.IgnoreCase);
     // A listed extension at the end of a word; paths with spaces are found by trying starts to its left.
     static readonly Regex ExtensionEnd = new(@"\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)\b", RegexOptions.IgnoreCase);
-    // "E:\docs\a.md#some-heading": a file plus the heading to jump to (what the heading link button copies).
-    static readonly Regex WithFragment = new(@"^(?<path>.+?\.(?:md|markdown))#(?<id>[^\s#]+)$", RegexOptions.IgnoreCase);
+    // "E:\docs\a.md#some-heading", anywhere in the text: a file plus the heading to jump to (what the
+    // heading link button copies). The heading ends at whitespace, quotes, brackets or CJK punctuation.
+    static readonly Regex WithFragment = new(@"\.(?:md|markdown)(?<frag>#[^\s#""'<>()\[\]。，、；：！？」』）]+)", RegexOptions.IgnoreCase);
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
         { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
@@ -54,6 +55,8 @@ sealed class MainForm : Form
     IntPtr returnFocusTo; // the window the user was typing in when a clipboard copy brought ours back
     int startScroll; // reading position for the document the next page load opens (a tray "最近讀過" pick)
     string exportHtml = ""; // the page being turned into a PDF, served at __export
+    // Text of each searched file, reused while its modification time is unchanged.
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Written, string[] Lines)> searchCache = new(StringComparer.OrdinalIgnoreCase);
     readonly FileSystemWatcher watcher = new()
     {
         IncludeSubdirectories = true,
@@ -202,6 +205,7 @@ sealed class MainForm : Form
         web = null;
         appReady = false;
         afterReady.Clear();
+        searchCache.Clear();
         Controls.Remove(view);
         view.Dispose();
         // Hidden in the tray for possibly hours: give back what the page used.
@@ -497,7 +501,7 @@ sealed class MainForm : Form
                 if (Str("mode") is "auto" or "hint" or "off") { settings.Clip = Str("mode"); settings.Save(); }
                 break;
             case "opened":
-                if (FromRel(Str("rel")) is { } opened)
+                if (FromRel(Str("rel")) is { } opened && File.Exists(opened)) // not for a "not found" page
                 {
                     lastOpened = opened;
                     settings.RememberDir(Path.GetDirectoryName(opened)!);
@@ -546,8 +550,11 @@ sealed class MainForm : Form
         }
     }
 
+    // The text without the "#heading" part (so the path can be found as usual), and that part.
     static (string Text, string? Hash) SplitFragment(string text) =>
-        WithFragment.Match(text.Trim().Trim('"', '\'')) is { Success: true } m ? (m.Groups["path"].Value, "#" + m.Groups["id"].Value) : (text, null);
+        WithFragment.Match(text) is { Success: true } m
+            ? (text.Remove(m.Groups["frag"].Index, m.Groups["frag"].Length), m.Groups["frag"].Value)
+            : (text, null);
 
     // Copies for the page (code blocks, heading links, file path). Marks the new clipboard content as
     // handled so our own copy does not come back as a "path found on the clipboard".
@@ -643,7 +650,7 @@ sealed class MainForm : Form
                 foreach (var rel in files.Where(IsMarkdown))
                 {
                     string[] lines;
-                    try { lines = File.ReadAllLines(Path.Combine(dir, rel.Replace('/', '\\'))); }
+                    try { lines = ReadForSearch(Path.Combine(dir, rel.Replace('/', '\\'))); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
                     int nth = 0, fileHits = 0;
                     bool inDiagram = false;
@@ -666,6 +673,15 @@ sealed class MainForm : Form
             }
             if (IsHandleCreated) BeginInvoke(() => Post(new { type = "searchResults", id, hits, total, files = fileCount }));
         });
+    }
+
+    string[] ReadForSearch(string path)
+    {
+        var written = File.GetLastWriteTimeUtc(path);
+        if (searchCache.TryGetValue(path, out var cached) && cached.Written == written) return cached.Lines;
+        var lines = File.ReadAllLines(path);
+        searchCache[path] = (written, lines);
+        return lines;
     }
 
     // The hit with some text on each side, split so the page can mark the match.
@@ -1060,8 +1076,26 @@ sealed class MainForm : Form
             case "app.js" or "zoom.js" or "hljs.min.js" or "mermaid.min.js":
                 return (Encoding.UTF8.GetBytes(Resource(name)), "text/javascript; charset=utf-8");
             default:
-                return null;
+                // bundled libraries with their own files, e.g. katex/katex.min.css and katex/fonts/*.woff2
+                return ResourceBytes(name) is { } bytes ? (bytes, MimeFor(name) is var t && t.StartsWith("text/plain") ? AppMime(name) : t) : null;
         }
+    }
+
+    static string AppMime(string name) => Path.GetExtension(name).ToLowerInvariant() switch
+    {
+        ".js" => "text/javascript; charset=utf-8",
+        ".css" => "text/css; charset=utf-8",
+        ".woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    };
+
+    static byte[]? ResourceBytes(string name)
+    {
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(name);
+        if (stream is null) return null;
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+        return buffer.ToArray();
     }
 
     static string Resource(string name)

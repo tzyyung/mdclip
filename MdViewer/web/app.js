@@ -33,6 +33,8 @@ const ICONS = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 9"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
   up: '<path d="M6 15l6-6 6 6"/>',
   down: '<path d="M6 9l6 6 6-6"/>',
   text: '<path d="M4 6h16M4 12h10M4 18h7"/><circle cx="17.5" cy="16.5" r="3"/><path d="M20 19l2 2"/>',
@@ -59,6 +61,8 @@ const state = {
   headings: [],
   open: new Set(),      // expanded folders, per root
   history: cfg.history ?? [], // files read lately, across all roots: { path, when, exists }
+  tabs: [{ hist: [], at: -1 }], // each tab keeps its own back/forward list; state.hist/at are the active tab's
+  tab: 0,
   theme: cfg.theme,
   lastLight: cfg.lastLight,
   lastDark: cfg.lastDark,
@@ -76,6 +80,7 @@ const fileIcon = (rel) => (isImage(rel) ? "image" : "file");
 
 function loadRootState() {
   state.open = new Set(store.get("open:" + cfg.root, []));
+  restoreTabs();
   $("proj-name").textContent = cfg.name;
   $("proj-path").textContent = cfg.root;
   $("proj-path").title = cfg.root;
@@ -287,9 +292,15 @@ $("tree").addEventListener("click", (e) => {
     if (state.open.has(key)) state.open.delete(key); else state.open.add(key);
     saveOpen();
     renderTree();
+  } else if (e.ctrlKey) {
+    openInNewTab(row.dataset.rel);
   } else {
     navigate(row.dataset.rel);
   }
+});
+$("tree").addEventListener("auxclick", (e) => {
+  const row = e.target.closest(".row.file");
+  if (row && e.button === 1) { e.preventDefault(); openInNewTab(row.dataset.rel); }
 });
 
 $("filter").addEventListener("input", renderTree);
@@ -385,9 +396,9 @@ frame.addEventListener("load", () => {
   // unless the reader has moved in the meantime.
   let moved = false;
   for (const type of ["wheel", "keydown", "pointerdown"]) doc.addEventListener(type, () => { moved = true; }, { once: true, passive: true });
-  renderDiagrams(doc).then((drawn) => {
+  Promise.all([renderDiagrams(doc), renderMath(doc)]).then(([drawn, typeset]) => {
     if (doc !== frame.contentDocument) return;
-    if (drawn && !moved) restore();
+    if ((drawn || typeset) && !moved) restore();
     if (p?.find) openFind(p.find.q, p.find.nth);
     else if (!$("findbar").hidden) runFind(-1);
   });
@@ -416,8 +427,17 @@ function hookDoc(doc) {
     if (url.protocol === "javascript:") return; // never run, never hand to the shell
     if (url.origin !== location.origin) { post({ type: "external", url: url.href }); return; }
     const rel = relOf(url.pathname);
+    if (e.ctrlKey) { openInNewTab(rel, url.hash); return; }
     if (rel === state.current) { if (url.hash) scrollToHash(url.hash, true); return; }
     navigate(rel, url.hash);
+  });
+  doc.addEventListener("auxclick", (e) => {
+    const a = e.target.closest("a[href]");
+    if (!a || e.button !== 1) return;
+    const url = new URL(a.getAttribute("href"), doc.baseURI);
+    if (url.origin !== location.origin) return;
+    e.preventDefault();
+    openInNewTab(relOf(url.pathname), url.hash);
   });
   let ticking = false, report = 0;
   doc.defaultView.addEventListener("scroll", () => {
@@ -434,6 +454,8 @@ function hookDoc(doc) {
 }
 
 function updateChrome() {
+  renderTabs();
+  saveTabs();
   $("back").disabled = state.at <= 0;
   $("forward").disabled = state.at >= state.hist.length - 1;
   renderCrumbs();
@@ -609,14 +631,16 @@ function renderPalette(message) {
   list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 }
 
-function choose(it) {
+// newTab: Ctrl+Enter or Ctrl+click opens the file in a new tab.
+function choose(it, newTab = false) {
   if (!it) return;
-  if (it.kind === "file") { closePalette(); navigate(it.rel); }
+  if (it.kind === "file") { closePalette(); if (newTab) openInNewTab(it.rel); else navigate(it.rel); }
   else if (it.kind === "heading") { closePalette(); scrollToHash(it.id, true); }
   else if (it.kind === "hist") { closePalette(); openHistory(it.path, it.scroll); }
   else if (it.kind === "hit") {
     closePalette();
-    if (it.rel === state.current) openFind(it.q, it.nth);
+    if (newTab) openInNewTab(it.rel, "", { q: it.q, nth: it.nth });
+    else if (it.rel === state.current) openFind(it.q, it.nth);
     else navigate(it.rel, "", 0, { q: it.q, nth: it.nth });
   }
   else if (it.kind === "path") {
@@ -638,6 +662,209 @@ function onResolved(m) {
   if (m.rel === state.current && m.hash) scrollToHash(m.hash, true);
   else if (m.rel) navigate(m.rel, m.hash ?? "", pal.pendingScroll);
 }
+
+// ---------- tabs ----------
+
+// Keeps the active tab's back/forward list in its slot before another tab becomes active.
+function stashTab() {
+  saveScroll();
+  const t = state.tabs[state.tab];
+  t.hist = state.hist;
+  t.at = state.at;
+}
+
+function activateTab(i) {
+  state.tab = i;
+  state.hist = state.tabs[i].hist;
+  state.at = state.tabs[i].at;
+}
+
+function openActiveTab() {
+  const entry = state.hist[state.at];
+  if (entry) load(entry.rel, { scroll: entry.scroll }); else showEmpty();
+  updateChrome();
+}
+
+function switchTab(i) {
+  const n = state.tabs.length;
+  if (n < 2) return;
+  i = ((i % n) + n) % n;
+  if (i === state.tab) return;
+  stashTab();
+  activateTab(i);
+  openActiveTab();
+}
+
+function openInNewTab(rel, hash = "", find = null) {
+  if (!rel) return;
+  stashTab();
+  state.tabs.splice(state.tab + 1, 0, { hist: [], at: -1 });
+  activateTab(state.tab + 1);
+  navigate(rel, hash, 0, find);
+  renderTabs();
+}
+
+// Ctrl+T: an empty tab with quick open ready.
+function newTab() {
+  stashTab();
+  state.tabs.splice(state.tab + 1, 0, { hist: [], at: -1 });
+  activateTab(state.tab + 1);
+  showEmpty();
+  openPalette();
+}
+
+function closeTab(i) {
+  if (state.tabs.length === 1) {
+    state.tabs[0] = { hist: [], at: -1 };
+    activateTab(0);
+    showEmpty();
+    return;
+  }
+  const wasActive = i === state.tab;
+  if (!wasActive) stashTab();
+  state.tabs.splice(i, 1);
+  if (wasActive) {
+    activateTab(Math.min(i, state.tabs.length - 1));
+    openActiveTab();
+  } else {
+    if (i < state.tab) state.tab--;
+    renderTabs();
+    saveTabs();
+  }
+}
+
+// The active tab may be blank for a moment (switching folders, starting up) while its page is still set.
+const tabRel = (t, i) => (i === state.tab ? state.current ?? state.hist[state.at]?.rel : t.hist[t.at]?.rel);
+
+// The strip appears only with two or more tabs.
+function renderTabs() {
+  const strip = $("tabs"), many = state.tabs.length > 1;
+  body.classList.toggle("has-tabs", many);
+  strip.hidden = !many;
+  if (!many) return;
+  strip.innerHTML = state.tabs.map((t, i) => {
+    const rel = tabRel(t, i);
+    return `<div class="tab${i === state.tab ? " on" : ""}" data-i="${i}" title="${esc(rel ?? "新分頁")}" role="tab">` +
+      `${icon(rel && isImage(rel) ? "image" : "file", "ico")}<span>${esc(rel ? baseName(rel) : "新分頁")}</span>` +
+      `<button class="x" data-close="${i}" title="關閉 (Ctrl+W)">${icon("close")}</button></div>`;
+  }).join("") + `<button class="tab-new" title="新分頁 (Ctrl+T)">${icon("plus")}</button>`;
+  strip.querySelector(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+// Each folder remembers its open tabs (the page each one shows).
+function saveTabs() {
+  if (state.tabs[state.tab]) { state.tabs[state.tab].hist = state.hist; state.tabs[state.tab].at = state.at; }
+  const list = state.tabs.map((t, i) => tabRel(t, i) ?? "");
+  store.set("tabs:" + cfg.root, { list, active: state.tab });
+}
+
+function restoreTabs() {
+  const saved = store.get("tabs:" + cfg.root, null);
+  const list = saved?.list?.length ? saved.list : [""];
+  state.tabs = list.map((rel) => (rel ? { hist: [{ rel, scroll: 0 }], at: 0 } : { hist: [], at: -1 }));
+  activateTab(Math.min(Math.max(saved?.active ?? 0, 0), state.tabs.length - 1));
+}
+
+$("tabs").addEventListener("click", (e) => {
+  if (e.target.closest(".tab-new")) { newTab(); return; }
+  const close = e.target.closest("[data-close]");
+  if (close) { closeTab(+close.dataset.close); return; }
+  const tab = e.target.closest(".tab");
+  if (tab) switchTab(+tab.dataset.i);
+});
+$("tabs").addEventListener("auxclick", (e) => {
+  const tab = e.target.closest(".tab");
+  if (tab && e.button === 1) { e.preventDefault(); closeTab(+tab.dataset.i); }
+});
+
+// ---------- math ----------
+
+let katexReady = null;
+
+// KaTeX loads only when a document has math ($...$ or $$...$$, which Markdig marks as .math).
+function loadKatex() {
+  return (katexReady ??= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "katex/katex.min.js";
+    script.onload = () => resolve(window.katex);
+    script.onerror = () => { katexReady = null; reject(new Error("無法載入 KaTeX")); };
+    document.head.append(script);
+  }));
+}
+
+async function renderMath(doc) {
+  const blocks = doc?.body ? [...doc.querySelectorAll("main .math:not(.typeset)")] : [];
+  if (!blocks.length) return false;
+  if (!doc.getElementById("katex-css")) {
+    const link = doc.createElement("link");
+    link.id = "katex-css";
+    link.rel = "stylesheet";
+    link.href = "/__app/katex/katex.min.css";
+    doc.head.append(link);
+  }
+  let katex;
+  try { katex = await loadKatex(); } catch { return false; }
+  for (const el of blocks) {
+    const tex = el.textContent.trim().replace(/^\\[([]/, "").replace(/\\[)\]]$/, "").trim();
+    katex.render(tex, el, { displayMode: el.tagName === "DIV", throwOnError: false });
+    el.classList.add("typeset");
+  }
+  return true;
+}
+
+// ---------- help ----------
+
+const HELP = [
+  ["開啟與搜尋", [
+    ["Ctrl+P", "快速開啟：輸入檔名、貼上路徑，或用 # 跳到本篇標題"],
+    ["Ctrl+Shift+F", "搜尋這個資料夾所有文件的內文"],
+    ["Ctrl+F", "在本篇中尋找（Enter / Shift+Enter 或 F3 切換）"],
+    ["Ctrl+H", "閱讀紀錄（最近 30 個檔案，回到上次讀到的位置）"],
+    ["Ctrl+O · Ctrl+Shift+O", "開啟檔案 · 開啟資料夾"],
+    ["拖曳", "把檔案或資料夾拖到視窗上就打開"],
+  ]],
+  ["分頁與瀏覽", [
+    ["Ctrl+T · Ctrl+W", "新分頁 · 關閉分頁（也可以用滑鼠中鍵點分頁）"],
+    ["Ctrl+Tab", "下一個分頁（加 Shift 是上一個）"],
+    ["Ctrl+點 · 中鍵", "在新分頁開啟連結或檔案；快速開啟裡用 Ctrl+Enter"],
+    ["Alt+← · Alt+→", "上一頁 · 下一頁（滑鼠側鍵也可以）"],
+    ["F5", "重新整理"],
+  ]],
+  ["版面", [
+    ["Ctrl+B · Ctrl+J", "檔案側欄 · 本篇大綱"],
+    ["F11", "專注閱讀（隱藏所有面板；移到視窗邊緣會暫時滑出來）"],
+    ["Ctrl+= · Ctrl+- · Ctrl+0", "放大 · 縮小 · 恢復文字大小（也可以 Ctrl+滾輪）"],
+    ["Ctrl+D", "亮色 / 暗色切換；調色盤按鈕可以換主題"],
+    ["拖曳邊線", "調整側欄和大綱寬度，雙擊恢復"],
+  ]],
+  ["文件裡", [
+    ["點圖片", "放大檢視：滾輪縮放、拖曳移動、← → 切換"],
+    ["程式碼右上角", "複製程式碼"],
+    ["標題左邊的 🔗", "複製「檔案路徑#標題」，貼回來會直接跳到那一節"],
+    ["更多選單", "匯出 PDF、複製檔案路徑、在檔案總管顯示"],
+  ]],
+  ["剪貼簿與背景", [
+    ["複製路徑", "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；可在更多選單或系統匣改成只提示或不理會"],
+    ["✕ 關閉", "縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」"],
+    ["系統匣選單", "最近讀過的檔案、開機時在背景啟動"],
+  ]],
+];
+
+function openHelp() {
+  closeMenus();
+  $("help-body").innerHTML = HELP.map(([group, rows]) =>
+    `<section><h3>${group}</h3><dl>${rows.map(([k, v]) => `<dt>${k.split(" · ").map((x) => `<kbd>${esc(x)}</kbd>`).join(" ")}</dt><dd>${esc(v)}</dd>`).join("")}</dl></section>`).join("");
+  $("help").hidden = false;
+  $("help-close").focus();
+}
+
+function closeHelp() {
+  $("help").hidden = true;
+  focusDoc();
+}
+
+$("help-close").onclick = closeHelp;
+$("help").addEventListener("mousedown", (e) => { if (e.target === $("help")) closeHelp(); });
 
 // ---------- full-text search ----------
 
@@ -711,7 +938,7 @@ function runFind(nth = 0) {
     const nodes = [];
     let text = "";
     const walker = doc.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
-      acceptNode: (n) => (n.parentElement.closest("style, script, svg") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+      acceptNode: (n) => (n.parentElement.closest("style, script, svg, .katex-mathml") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
     });
     for (let n; (n = walker.nextNode()); ) { nodes.push({ n, start: text.length }); text += n.data; }
     const hay = text.toLowerCase();
@@ -943,7 +1170,7 @@ $("palette-input").addEventListener("keydown", (e) => {
     if (n) { pal.sel = (pal.sel + (e.key === "ArrowDown" ? 1 : -1) + n) % n; renderPalette(); }
   } else if (e.key === "Enter") {
     e.preventDefault();
-    choose(pal.items[pal.sel]);
+    choose(pal.items[pal.sel], e.ctrlKey);
   } else if (e.key === "Escape") {
     e.preventDefault();
     e.stopPropagation();
@@ -952,7 +1179,7 @@ $("palette-input").addEventListener("keydown", (e) => {
 });
 $("palette-list").addEventListener("click", (e) => {
   const li = e.target.closest("li[data-i]");
-  if (li) choose(pal.items[+li.dataset.i]);
+  if (li) choose(pal.items[+li.dataset.i], e.ctrlKey);
 });
 $("palette").addEventListener("mousedown", (e) => { if (e.target === $("palette")) closePalette(); });
 
@@ -1068,6 +1295,7 @@ function openMoreMenu() {
     item("pdf", "file", "匯出 PDF…", "", has && !isImage(state.current)) +
     "<hr>" +
     item("reload", "reload", "重新整理", "F5") +
+    item("help", "keyboard", "快捷鍵與功能", "?") +
     `<div class="label">剪貼簿有 .md 或圖片路徑時</div>` +
     [["auto", "自動開啟"], ["hint", "只提示"], ["off", "不理會"]]
       .map(([mode, label]) => `<button data-clip="${mode}">${icon("copy")}<span>${label}</span>${layout.clip === mode ? `<span class="tail">${icon("check")}</span>` : ""}</button>`)
@@ -1087,6 +1315,7 @@ $("more-menu").addEventListener("click", (e) => {
   else if (act === "reveal") post({ type: "reveal", rel: state.current });
   else if (act === "reload") reloadAll();
   else if (act === "pdf") exportPdf();
+  else if (act === "help") openHelp();
   else if (act === "copy") {
     copyText(currentPath());
     toast("已複製：" + currentPath());
@@ -1256,6 +1485,11 @@ function onKey(e) {
   else if (k === "f3" && !$("findbar").hidden) gotoFind(finder.i + (e.shiftKey ? -1 : 1));
   else if (ctrl && !e.shiftKey && k === "d") toggleDark();
   else if (ctrl && !e.shiftKey && k === "h") openHistoryMenu();
+  else if (ctrl && !e.shiftKey && k === "t") newTab();
+  else if (ctrl && !e.shiftKey && k === "w") closeTab(state.tab);
+  else if (ctrl && (k === "tab" || k === "pagedown" || k === "pageup"))
+    switchTab(state.tab + (e.shiftKey || k === "pageup" ? -1 : 1));
+  else if ((k === "?" || k === "f1") && !e.target.closest?.("input, textarea")) openHelp();
   else if (ctrl && !e.shiftKey && k === "b") toggleSide();
   else if (ctrl && !e.shiftKey && k === "j") toggleToc();
   else if (ctrl && !e.shiftKey && k === "o") post({ type: "pickFile" });
@@ -1268,6 +1502,7 @@ function onKey(e) {
   else if ((e.altKey && k === "arrowleft") || k === "browserback") go(-1);
   else if ((e.altKey && k === "arrowright") || k === "browserforward") go(1);
   else if (k === "escape" && closeMenus()) { /* closed a menu */ }
+  else if (k === "escape" && !$("help").hidden) closeHelp();
   else if (k === "escape" && !$("findbar").hidden) closeFind();
   else if (k === "escape" && layout.zen) toggleZen();
   else return;
@@ -1294,14 +1529,15 @@ window.chrome?.webview?.addEventListener("message", (e) => {
       break;
     case "root":
       if (m.root === cfg.root) break;
+      saveTabs();
       cfg.root = m.root;
       cfg.name = m.name;
-      state.hist = [];
-      state.at = -1;
       $("filter").value = "";
-      loadRootState();
+      loadRootState(); // before anything saves tabs under the new folder's name
       showEmpty();
       loadTree();
+      // Show the folder's active tab unless an "open" for a file there follows right away.
+      setTimeout(() => { if (!state.current && !state.pending) openActiveTab(); }, 60);
       break;
     case "open": navigate(m.rel); break;
     case "resolved": onResolved(m); break;
@@ -1368,5 +1604,8 @@ renderToc();
 updateChrome();
 loadTree();
 const start = decodeURIComponent(location.hash.slice(1));
-if (start) navigate(start, "", cfg.startScroll || 0); else showEmpty();
+const startTab = start ? state.tabs.findIndex((t) => t.hist[t.at]?.rel === start) : -1;
+if (startTab >= 0) { activateTab(startTab); state.hist[state.at].scroll = cfg.startScroll || 0; openActiveTab(); }
+else if (start) navigate(start, "", cfg.startScroll || 0);
+else openActiveTab();
 post({ type: "ready" }); // the host holds clipboard finds and open requests until now

@@ -52,6 +52,7 @@
 <div class="resizer" id="resizer" title="拖曳調整寬度，雙擊恢復"></div>
 
 <main class="doc">
+  <div class="tabs" id="tabs" role="tablist" hidden></div>
   <iframe id="frame" title="文件內容"></iframe>
   <div class="findbar" id="findbar" role="search" hidden>
     <input id="find-input" placeholder="在本篇中尋找" spellcheck="false" autocomplete="off">
@@ -92,6 +93,12 @@
 <div class="menu" id="history-menu" hidden></div>
 <div class="lightbox" id="lightbox" role="dialog" aria-label="圖片檢視" hidden></div>
 <div class="toast" id="toast" role="status" hidden></div>
+<div class="help" id="help" role="dialog" aria-label="快捷鍵與功能" hidden>
+  <div class="help-box">
+    <div class="help-head"><h2>快捷鍵與功能</h2><button class="icon sm" id="help-close" title="關閉 (Esc)">✕</button></div>
+    <div class="help-body" id="help-body"></div>
+  </div>
+</div>
 <div class="drop" id="drop" hidden><div class="drop-box">放開以開啟檔案或資料夾</div></div>
 
 <script>/*CONFIG*/</script>
