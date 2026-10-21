@@ -39,7 +39,9 @@ async function js(expr) {
 
 async function waitFor(expr, ms = 5000) {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await js(expr)) return true;
-  throw new Error("timed out waiting for: " + expr);
+  // What the page was showing instead, for intermittent failures.
+  const seen = await js("JSON.stringify({ current: state.current, pending: !!state.pending, toast: $('toast').hidden ? null : $('toast').textContent })");
+  throw new Error("timed out waiting for: " + expr + "  page: " + seen);
 }
 
 // ---------- clipboard (the PowerShell wrapper restores the user's clipboard afterwards) ----------

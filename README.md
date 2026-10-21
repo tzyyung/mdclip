@@ -84,8 +84,10 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 .\tools\smoke-test.ps1
 ```
 
-會用 `tools\fixtures\` 的測試文件把主要功能跑一遍，再檢查系統匣：✕ 會縮到系統匣、
-複製路徑會叫回視窗、`--exit` 能結束。需要 Node.js 22 以上。
+先跑單元測試（`MdViewer.Tests`，約 60 個「複製這段文字應該打開哪個檔」的例子：絕對 / 相對路徑、只有檔名、
+含空白的路徑、黏在中文句子裡的路徑、`#標題`），再用 `tools\fixtures\` 的測試文件把主要功能跑一遍，
+最後檢查系統匣：✕ 會縮到系統匣、複製路徑會叫回視窗、`--exit` 能結束。需要 Node.js 22 以上。
+只想跑單元測試（幾秒鐘，不會動到正在執行的 MdViewer）：`dotnet test MdViewer.Tests`。
 執行前會先關掉 MdViewer，結束後開回原本那份文件；剪貼簿會先備份、測完還原，測試檔不會留在閱讀紀錄裡。
 
 ## 程式結構
@@ -94,7 +96,9 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 |---|---|
 | `MdViewer/Program.cs` | 進入點、只允許一個程式（第二次開啟會把路徑交給已開的視窗）、`--tray` / `--exit` |
 | `MdViewer/MainForm.cs` | 視窗、系統匣、剪貼簿監控、Markdown 轉 HTML（Markdig）、提供網頁內容給 WebView2 |
+| `MdViewer/PathFinder.cs` | 從複製或貼上的文字找出要打開的檔案（剪貼簿、快速開啟共用） |
 | `MdViewer/Themes.cs` | 12 種主題的顏色、設定檔的讀寫 |
 | `MdViewer/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX |
 | `tools/make-icon.ps1` | 產生 `app.ico` |
-| `tools/smoke-test.ps1`、`tools/smoke.mjs` | 自動化測試 |
+| `MdViewer.Tests/` | `PathFinder` 的單元測試 |
+| `tools/smoke-test.ps1`、`tools/smoke.mjs` | 自動化測試（含單元測試） |

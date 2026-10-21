@@ -15,6 +15,7 @@ using Markdig.Syntax;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
+using static MdViewer.PathFinder;
 
 namespace MdViewer;
 
@@ -33,15 +34,6 @@ sealed class MainForm : Form
         .UseAdvancedExtensions()
         .UseYamlFrontMatter() // parsed out of the body; shown as a collapsible "文件資訊" box instead
         .Build();
-    // Path-looking tokens ending in a listed extension, e.g. E:\docs\b.md, docs/x.png, ./y.md:12
-    static readonly Regex PathToken = new(
-        @"(?:[A-Za-z]:[\\/]|\\\\)?[^\s""'<>|*?()\[\]`]*?\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)\b",
-        RegexOptions.IgnoreCase);
-    // A listed extension at the end of a word; paths with spaces are found by trying starts to its left.
-    static readonly Regex ExtensionEnd = new(@"\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)\b", RegexOptions.IgnoreCase);
-    // "E:\docs\a.md#some-heading", anywhere in the text: a file plus the heading to jump to (what the
-    // heading link button copies). The heading ends at whitespace, quotes, brackets or CJK punctuation.
-    static readonly Regex WithFragment = new(@"\.(?:md|markdown)(?<frag>#[^\s#""'<>()\[\]。，、；：！？」』）]+)", RegexOptions.IgnoreCase);
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
         { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
@@ -440,32 +432,18 @@ sealed class MainForm : Form
     static bool IsUnder(string path, string dir) =>
         path.StartsWith(dir.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
 
-    static bool IsMarkdown(string path) =>
-        Path.GetExtension(path).ToLowerInvariant() is ".md" or ".markdown";
+    // The clipboard and quick-open rules for turning text into a file (see PathFinder).
+    PathFinder Finder() => new(root, knownFiles, settings.Dirs);
 
-    static bool IsImage(string path) =>
-        Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif" or ".svg" or ".webp" or ".bmp";
+    string? ResolveInput(string text) => Finder().Resolve(text);
 
-    // What the tree lists and the watcher cares about.
-    static bool IsListed(string path) => IsMarkdown(path) || IsImage(path);
-
-    // Accepts a pasted absolute path (file or folder, quoted or not, / or \), a file:// URL,
-    // or a file path relative to the current root.
-    string? ResolveInput(string text)
+    // Also remembers the absolute folders in the text, for later copies of just a file name.
+    (string? Path, List<string> Matches) FindPathIn(string text)
     {
-        var s = text.Trim().Trim('"', '\'');
-        if (s.Length == 0) return null;
-        if (s.StartsWith("file:", StringComparison.OrdinalIgnoreCase) && Uri.TryCreate(s, UriKind.Absolute, out var uri)) s = uri.LocalPath;
-        s = s.Replace('/', '\\');
-        try
-        {
-            if (Path.IsPathFullyQualified(s))
-                return File.Exists(s) || Directory.Exists(s) ? Path.GetFullPath(s) : null;
-            if (Path.GetFullPath(Path.Combine(root, s.TrimStart('\\'))) is var full && File.Exists(full))
-                return full;
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }
-        return null;
+        var finder = Finder();
+        var found = finder.Find(text);
+        foreach (var dir in finder.SeenDirs) settings.RememberDir(dir);
+        return found;
     }
 
     // Opens a file (switching root if it lives elsewhere) and returns its relative path,
@@ -549,12 +527,6 @@ sealed class MainForm : Form
                 break;
         }
     }
-
-    // The text without the "#heading" part (so the path can be found as usual), and that part.
-    static (string Text, string? Hash) SplitFragment(string text) =>
-        WithFragment.Match(text) is { Success: true } m
-            ? (text.Remove(m.Groups["frag"].Index, m.Groups["frag"].Length), m.Groups["frag"].Value)
-            : (text, null);
 
     // Copies for the page (code blocks, heading links, file path). Marks the new clipboard content as
     // handled so our own copy does not come back as a "path found on the clipboard".
@@ -846,69 +818,6 @@ sealed class MainForm : Form
         ShowFromTray(activate: false);
     }
 
-    (string? Path, List<string> Matches) FindPathIn(string text)
-    {
-        var candidates = new[] { text }
-            .Concat(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            .Concat(SpacedCandidates(text))
-            .Concat(PathToken.Matches(text).Select(m => m.Value))
-            .ToList();
-        RememberDirsIn(candidates);
-        foreach (var candidate in candidates)
-            if (ResolveInput(candidate) is { } path && IsListed(path) && File.Exists(path)) return (path, []);
-
-        // Not a real path: treat it as a file name or path tail. A single match under the root wins;
-        // otherwise look next to recently opened files (also outside the root), most recent first;
-        // otherwise report every match under the root so the user can pick.
-        foreach (var candidate in candidates)
-        {
-            var tail = candidate.Trim().Trim('"', '\'', '`').Replace('\\', '/').TrimStart('.', '/');
-            if (tail.Length == 0 || tail.Any(char.IsWhiteSpace) || !IsListed(tail)) continue;
-            var hits = knownFiles.Where(rel => rel.Equals(tail, StringComparison.OrdinalIgnoreCase)
-                || rel.EndsWith("/" + tail, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (hits.Count == 1) return (null, hits);
-            if (FindInRecentDirs(tail) is { } recent) return (recent, []);
-            if (hits.Count > 1) return (null, hits);
-        }
-        return (null, []);
-    }
-
-    // For each listed extension inside a sentence, the stretches that end there and contain a space,
-    // starting at a drive letter, a UNC prefix or a word boundary, longest first: "see C:\My Docs\a.md now"
-    // yields "see C:\My Docs\a.md", "C:\My Docs\a.md", ... Only ones that exist are used.
-    static IEnumerable<string> SpacedCandidates(string text)
-    {
-        foreach (var line in text.Split('\n'))
-        {
-            foreach (Match ext in ExtensionEnd.Matches(line))
-            {
-                var starts = new List<int>();
-                for (int i = 0; i < ext.Index; i++)
-                {
-                    if (char.IsWhiteSpace(line[i])) continue;
-                    bool afterBreak = i == 0 || char.IsWhiteSpace(line[i - 1]) || line[i - 1] is '"' or '\'' or '`' or '(' or '「' or '：';
-                    bool drive = i + 2 < line.Length && char.IsAsciiLetter(line[i]) && line[i + 1] == ':' && line[i + 2] is '\\' or '/';
-                    if (afterBreak || drive) starts.Add(i);
-                }
-                foreach (var start in starts.TakeLast(12))
-                    if (line[start..(ext.Index + ext.Length)] is var candidate && candidate.Any(char.IsWhiteSpace))
-                        yield return candidate;
-            }
-        }
-    }
-
-    // Any absolute folder in the copied text, or the folder of any absolute file path, is remembered
-    // so a later copy of just a file name can be matched against it.
-    void RememberDirsIn(IEnumerable<string> candidates)
-    {
-        foreach (var candidate in candidates)
-        {
-            if (ResolveInput(candidate) is not { } path || !Path.IsPathFullyQualified(candidate.Trim().Trim('"', '\'', '`'))) continue;
-            if (Directory.Exists(path)) settings.RememberDir(path);
-            else if (IsListed(path)) settings.RememberDir(Path.GetDirectoryName(path)!);
-        }
-    }
-
     // Puts the window on top of the others so a clipboard-triggered page is visible, without taking
     // keyboard focus from the app the user copied in.
     void BringToTop()
@@ -922,20 +831,6 @@ sealed class MainForm : Form
     [DllImport("user32.dll")]
     static extern bool ShowWindow(IntPtr hwnd, int command);
 
-    string? FindInRecentDirs(string tail)
-    {
-        var rel = tail.Replace('/', '\\');
-        foreach (var dir in settings.Dirs)
-        {
-            try
-            {
-                var path = Path.GetFullPath(Path.Combine(dir, rel));
-                if (File.Exists(path)) return path;
-            }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }
-        }
-        return null;
-    }
 
     [DllImport("user32.dll")]
     static extern bool AddClipboardFormatListener(IntPtr hwnd);

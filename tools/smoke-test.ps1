@@ -1,5 +1,6 @@
-# End-to-end check of the built viewer (app\MdViewer.exe): page features through the debug port
-# (tools\smoke.mjs), then the tray: close button hides, a clipboard path brings it back, --exit quits.
+# Unit tests for the path rules (MdViewer.Tests), then an end-to-end check of the built viewer
+# (app\MdViewer.exe): page features through the debug port (tools\smoke.mjs), then the tray: close
+# button hides, a clipboard path brings it back, --exit quits.
 #   .\tools\smoke-test.ps1
 # A running viewer is closed first and reopened on the same file afterwards. The clipboard is saved
 # and restored; fixture entries are removed from the reading history.
@@ -18,6 +19,9 @@ $repo = Split-Path $PSScriptRoot
 $exe = Join-Path $repo 'app\MdViewer.exe'
 $fixtures = Join-Path $PSScriptRoot 'fixtures'
 $settings = Join-Path $env:LOCALAPPDATA 'MdViewer\theme.txt'
+
+dotnet test (Join-Path $repo 'MdViewer.Tests') --nologo -v q
+if ($LASTEXITCODE -ne 0) { throw 'unit tests failed' }
 
 function Get-Viewer { Get-Process MdViewer -ErrorAction SilentlyContinue | Select-Object -First 1 }
 
