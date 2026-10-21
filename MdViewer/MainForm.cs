@@ -114,9 +114,17 @@ sealed class MainForm : Form
         return new Icon(stream);
     }
 
-    // Returns the file to open first, if the start path is one.
+    // Returns the file to open first: the start path if it is a file; with no start path, the last
+    // file read if it is still there under the last root (so a restart comes back to the same page).
     string? ChooseRoot(string? startPath)
     {
+        if (startPath is null && Directory.Exists(settings.Root)
+            && settings.History.FirstOrDefault() is { } last && File.Exists(last.Path) && IsUnder(last.Path, settings.Root))
+        {
+            SetRoot(settings.Root);
+            startScroll = last.Scroll;
+            return last.Path;
+        }
         if (startPath is not null && File.Exists(startPath))
         {
             var full = Path.GetFullPath(startPath);
@@ -374,6 +382,7 @@ sealed class MainForm : Form
 
     void OpenFromOtherInstance(string? path)
     {
+        if (path == Program.ExitRequest) { ExitApp(); return; }
         if (string.IsNullOrEmpty(path)) { }
         else if (Directory.Exists(path)) SetRoot(path);
         else if (File.Exists(path) && web is null) lastOpened = path; // the page about to load opens it

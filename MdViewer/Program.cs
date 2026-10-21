@@ -6,14 +6,21 @@ static class Program
 {
     const string MutexName = "MdViewer.SingleInstance";
     internal const string PipeName = "MdViewer.Open";
+    internal const string ExitRequest = "--exit";
 
     [STAThread]
     static void Main(string[] args)
     {
         // --tray: started at sign-in; stay in the notification area until needed.
+        // --exit: ask the running instance to quit properly (it removes its tray icon); used by publish.ps1.
         var startHidden = args.Contains("--tray");
-        var path = args.FirstOrDefault(a => a != "--tray");
+        var path = args.FirstOrDefault(a => !a.StartsWith("--"));
         using var mutex = new Mutex(true, MutexName, out var first);
+        if (args.Contains("--exit"))
+        {
+            if (!first) SendToRunningInstance(ExitRequest);
+            return;
+        }
         if (!first && (startHidden || SendToRunningInstance(path))) return;
 
         ApplicationConfiguration.Initialize();
@@ -31,7 +38,7 @@ static class Program
             using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
             pipe.Connect(2000);
             using var writer = new StreamWriter(pipe);
-            writer.WriteLine(path is null ? "" : Path.GetFullPath(path));
+            writer.WriteLine(path is null ? "" : path == ExitRequest ? path : Path.GetFullPath(path));
             return true;
         }
         catch (Exception ex) when (ex is TimeoutException or IOException)
