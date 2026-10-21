@@ -375,6 +375,7 @@ frame.addEventListener("load", () => {
   const p = state.pending;
   state.pending = null;
   highlightCode(doc);
+  addDocButtons(doc);
   const restore = () => {
     if (p?.hash) scrollToHash(p.hash, false);
     else if (p?.scroll) win.scrollTo(0, p.scroll);
@@ -398,6 +399,8 @@ frame.addEventListener("load", () => {
 
 function hookDoc(doc) {
   doc.addEventListener("keydown", onKey);
+  doc.addEventListener("dragenter", onDragEnter);
+  doc.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
   doc.addEventListener("mouseup", onMouseNav);
   doc.addEventListener("mousedown", closeMenus);
   for (const type of ["pointerdown", "wheel", "keydown"]) doc.addEventListener(type, noteInteraction, { capture: true, passive: true });
@@ -632,7 +635,8 @@ function onResolved(m) {
     return;
   }
   if (!$("palette").hidden) closePalette();
-  if (m.rel) navigate(m.rel, "", pal.pendingScroll);
+  if (m.rel === state.current && m.hash) scrollToHash(m.hash, true);
+  else if (m.rel) navigate(m.rel, m.hash ?? "", pal.pendingScroll);
 }
 
 // ---------- full-text search ----------
@@ -792,6 +796,94 @@ function loadMermaid() {
 }
 
 // Diagram colours come from the document's own theme variables.
+// Copy buttons on code blocks and a link button beside each heading.
+function addDocButtons(doc) {
+  if (doc.body.classList.contains("image-page")) return;
+  const button = (cls, title, ic) => {
+    const b = doc.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.title = title;
+    b.innerHTML = icon(ic);
+    return b;
+  };
+  for (const pre of doc.querySelectorAll("main pre")) {
+    if (pre.closest(".mermaid")) continue;
+    const b = button("copy-code", "複製程式碼", "copy");
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      copyText((pre.querySelector("code") ?? pre).textContent.replace(/\n$/, ""));
+      b.innerHTML = icon("check");
+      b.classList.add("done");
+      setTimeout(() => { b.innerHTML = icon("copy"); b.classList.remove("done"); }, 1500);
+    });
+    pre.append(b);
+  }
+  for (const h of doc.querySelectorAll("main :is(h1, h2, h3, h4)[id]")) {
+    const b = button("h-anchor", "複製這一節的連結（貼回來會直接跳到這裡）", "link");
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const link = currentPath() + "#" + h.id;
+      copyText(link);
+      toast("已複製這一節的連結：" + link);
+    });
+    h.prepend(b);
+  }
+}
+
+const currentPath = () => cfg.root.replace(/\\$/, "") + "\\" + state.current.replaceAll("/", "\\");
+
+// Through the host, which also keeps our own copies from being picked up as clipboard paths.
+const copyText = (text) => post({ type: "copy", text });
+
+// ---------- drag and drop ----------
+
+const hasFiles = (e) => [...(e.dataTransfer?.types ?? [])].includes("Files");
+
+// The overlay covers the document too, so the drop always lands in this page.
+function onDragEnter(e) {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  $("drop").hidden = false;
+}
+
+document.addEventListener("dragenter", onDragEnter);
+document.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+$("drop").addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+$("drop").addEventListener("dragleave", (e) => { if (!$("drop").contains(e.relatedTarget)) $("drop").hidden = true; });
+$("drop").addEventListener("drop", (e) => {
+  e.preventDefault();
+  $("drop").hidden = true;
+  if (e.dataTransfer.files.length) chrome.webview.postMessageWithAdditionalObjects({ type: "drop" }, e.dataTransfer.files);
+});
+
+// ---------- PDF ----------
+
+// Sends the document as it looks now (code colours, drawn diagrams), in a light theme when a dark
+// one is active, without the hover buttons and the text zoom.
+async function exportPdf() {
+  const doc = frame.contentDocument;
+  if (!state.current || isImage(state.current) || !doc?.body) return;
+  const now = resolveTheme(state.theme), paper = now.dark ? resolveTheme(state.lastLight) : now;
+  if (paper.id !== now.id) { doc.documentElement.dataset.theme = paper.id; await renderDiagrams(doc); }
+  const page = doc.documentElement.cloneNode(true);
+  if (paper.id !== now.id) { doc.documentElement.dataset.theme = now.id; renderDiagrams(doc); }
+  page.querySelectorAll(".copy-code, .h-anchor").forEach((el) => el.remove());
+  page.querySelectorAll(".flash").forEach((el) => el.classList.remove("flash"));
+  page.querySelector("body").style.zoom = "";
+  page.querySelectorAll(".frontmatter").forEach((el) => { el.open = true; });
+  page.querySelectorAll("img").forEach((img, i) => img.setAttribute("src", doc.images[i]?.src ?? img.src));
+  toast("正在匯出 PDF…");
+  post({ type: "exportPdf", rel: state.current, html: "<!doctype html>" + page.outerHTML });
+}
+
+function onExported(m) {
+  if (m.ok) toast("已匯出 PDF：" + m.path, { label: "開啟", run: () => post({ type: "openPdf", path: m.path }) }, 10000);
+  else toast("匯出 PDF 失敗，請看 error.log");
+}
+
 function mermaidConfig(doc) {
   const css = doc.defaultView.getComputedStyle(doc.documentElement);
   const v = (name) => css.getPropertyValue("--" + name).trim();
@@ -800,7 +892,7 @@ function mermaidConfig(doc) {
     securityLevel: "strict",
     theme: "base",
     themeVariables: {
-      darkMode: resolveTheme(state.theme).dark,
+      darkMode: (themeById[doc.documentElement.dataset.theme] ?? resolveTheme(state.theme)).dark,
       background: v("bg"), fontFamily: doc.defaultView.getComputedStyle(doc.body).fontFamily, fontSize: "15px",
       primaryColor: v("accent-soft"), primaryBorderColor: v("accent"), primaryTextColor: v("fg"),
       secondaryColor: v("code-bg"), tertiaryColor: v("pre-bg"), lineColor: v("muted"), textColor: v("fg"),
@@ -973,6 +1065,7 @@ function openMoreMenu() {
     "<hr>" +
     item("copy", "copy", "複製檔案路徑", "", has) +
     item("reveal", "explorer", "在檔案總管顯示", "", has) +
+    item("pdf", "file", "匯出 PDF…", "", has && !isImage(state.current)) +
     "<hr>" +
     item("reload", "reload", "重新整理", "F5") +
     `<div class="label">剪貼簿有 .md 或圖片路徑時</div>` +
@@ -993,9 +1086,10 @@ $("more-menu").addEventListener("click", (e) => {
   else if (act === "folder") post({ type: "pickFolder" });
   else if (act === "reveal") post({ type: "reveal", rel: state.current });
   else if (act === "reload") reloadAll();
+  else if (act === "pdf") exportPdf();
   else if (act === "copy") {
-    const full = cfg.root + "\\" + state.current.replaceAll("/", "\\");
-    navigator.clipboard.writeText(full).then(() => toast("已複製：" + full), () => toast("無法存取剪貼簿"));
+    copyText(currentPath());
+    toast("已複製：" + currentPath());
   }
 });
 
@@ -1137,9 +1231,10 @@ function onClipboard(m) {
       return;
     }
   }
+  if (m.rel && m.rel === state.current && m.hash) { scrollToHash(m.hash, true); return; }
   if (m.rel && m.rel === state.current) { toast("剪貼簿的檔案已經開著：" + m.rel, null, CLIP_MS); return; }
   const label = m.rel ?? m.path;
-  const open = () => (m.rel ? navigate(m.rel) : post({ type: "resolve", text: m.path, id: (pal.pendingId = "clip" + Date.now()) }));
+  const open = () => (m.rel ? navigate(m.rel, m.hash ?? "") : post({ type: "resolve", text: m.path + (m.hash ?? ""), id: (pal.pendingId = "clip" + Date.now()) }));
   if (mode === "hint") { toast("剪貼簿：" + label, { label: "開啟", run: open }, CLIP_MS); return; }
   const from = state.current;
   open();
@@ -1214,6 +1309,8 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "history": state.history = m.items; break;
     case "searchResults": onSearchResults(m); break;
     case "clipMode": layout.clip = m.mode; store.set("layout", layout); break;
+    case "openHistory": openHistory(m.path, m.scroll); break;
+    case "exported": onExported(m); break;
     case "system":
       cfg.systemDark = m.dark;
       if (state.theme === "auto") applyTheme("auto", false);
@@ -1271,5 +1368,5 @@ renderToc();
 updateChrome();
 loadTree();
 const start = decodeURIComponent(location.hash.slice(1));
-if (start) navigate(start); else showEmpty();
+if (start) navigate(start, "", cfg.startScroll || 0); else showEmpty();
 post({ type: "ready" }); // the host holds clipboard finds and open requests until now

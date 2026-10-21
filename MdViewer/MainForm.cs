@@ -9,6 +9,9 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Markdig;
 using Markdig.Extensions.AutoIdentifiers;
+using Markdig.Extensions.Yaml;
+using Markdig.Renderers;
+using Markdig.Syntax;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
@@ -28,6 +31,7 @@ sealed class MainForm : Form
     static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
         .UseAutoIdentifiers(AutoIdentifierOptions.GitHub) // keeps CJK heading ids
         .UseAdvancedExtensions()
+        .UseYamlFrontMatter() // parsed out of the body; shown as a collapsible "文件資訊" box instead
         .Build();
     // Path-looking tokens ending in a listed extension, e.g. E:\docs\b.md, docs/x.png, ./y.md:12
     static readonly Regex PathToken = new(
@@ -35,6 +39,8 @@ sealed class MainForm : Form
         RegexOptions.IgnoreCase);
     // A listed extension at the end of a word; paths with spaces are found by trying starts to its left.
     static readonly Regex ExtensionEnd = new(@"\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)\b", RegexOptions.IgnoreCase);
+    // "E:\docs\a.md#some-heading": a file plus the heading to jump to (what the heading link button copies).
+    static readonly Regex WithFragment = new(@"^(?<path>.+?\.(?:md|markdown))#(?<id>[^\s#]+)$", RegexOptions.IgnoreCase);
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
         { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
@@ -46,6 +52,8 @@ sealed class MainForm : Form
     readonly List<object> afterReady = []; // messages for a page that is still loading
     object? hintedClipboard; // clipboard find announced in a tray notification, opened if it is clicked
     IntPtr returnFocusTo; // the window the user was typing in when a clipboard copy brought ours back
+    int startScroll; // reading position for the document the next page load opens (a tray "最近讀過" pick)
+    string exportHtml = ""; // the page being turned into a PDF, served at __export
     readonly FileSystemWatcher watcher = new()
     {
         IncludeSubdirectories = true,
@@ -206,9 +214,18 @@ sealed class MainForm : Form
             clip.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetClipMode(mode)) { Tag = mode });
         var autostart = new ToolStripMenuItem("開機時在背景啟動", null, (_, _) => SetAutostart(!IsAutostart()));
         var exit = new ToolStripMenuItem("結束", null, (_, _) => ExitApp());
-        menu.Items.AddRange([open, new ToolStripSeparator(), clip, autostart, new ToolStripSeparator(), exit]);
+        var recent = new ToolStripMenuItem("最近讀過");
+        menu.Items.AddRange([open, recent, new ToolStripSeparator(), clip, autostart, new ToolStripSeparator(), exit]);
         menu.Opening += (_, _) =>
         {
+            recent.DropDownItems.Clear();
+            foreach (var h in settings.History.Where(h => File.Exists(h.Path)).Take(15))
+            {
+                var folder = Path.GetFileName(Path.GetDirectoryName(h.Path));
+                recent.DropDownItems.Add(new ToolStripMenuItem(Path.GetFileName(h.Path), null, (_, _) => OpenRecent(h))
+                    { ShortcutKeyDisplayString = folder, ToolTipText = h.Path });
+            }
+            recent.Enabled = recent.DropDownItems.Count > 0;
             foreach (ToolStripMenuItem item in clip.DropDownItems) item.Checked = (string)item.Tag! == settings.Clip;
             autostart.Checked = IsAutostart();
         };
@@ -299,6 +316,14 @@ sealed class MainForm : Form
         exiting = true;
         tray.Visible = false;
         Close();
+    }
+
+    // From the tray's "最近讀過": opens at the last reading position.
+    void OpenRecent(HistoryEntry h)
+    {
+        if (web is null) { lastOpened = h.Path; startScroll = h.Scroll; }
+        else PostWhenReady(new { type = "openHistory", path = h.Path, scroll = h.Scroll });
+        ShowFromTray(activate: true);
     }
 
     void SetClipMode(string mode)
@@ -486,10 +511,10 @@ sealed class MainForm : Form
                 Post(new { type = "history", items = HistoryItems() });
                 break;
             case "resolve":
-                var text = Str("text");
+                var (text, hash) = SplitFragment(Str("text"));
                 var (found, matches) = ResolveInput(text) is { } direct ? (direct, []) : FindPathIn(text);
                 if (found is null && matches.Count == 1) found = FromRel(matches[0]);
-                if (found is not null) Post(new { type = "resolved", id = Str("id"), rel = OpenPath(found) });
+                if (found is not null) Post(new { type = "resolved", id = Str("id"), rel = OpenPath(found), hash });
                 else Post(new
                 {
                     type = "resolved", id = Str("id"),
@@ -502,7 +527,88 @@ sealed class MainForm : Form
                 if (FromRel(Str("rel")) is { } file) Process.Start("explorer.exe", $"/select,\"{file}\"");
                 break;
             case "external": OpenExternal(Str("url")); break;
+            case "copy": CopyToClipboard(Str("text")); break;
+            case "drop": OpenDropped(e.AdditionalObjects?.OfType<CoreWebView2File>().Select(f => f.Path).ToList() ?? []); break;
+            case "exportPdf": ExportPdf(Str("rel"), Str("html")); break;
+            case "openPdf":
+                if (Str("path") is var pdf && pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) && File.Exists(pdf))
+                    OpenExternal(pdf);
+                break;
         }
+    }
+
+    static (string Text, string? Hash) SplitFragment(string text) =>
+        WithFragment.Match(text.Trim().Trim('"', '\'')) is { Success: true } m ? (m.Groups["path"].Value, "#" + m.Groups["id"].Value) : (text, null);
+
+    // Copies for the page (code blocks, heading links, file path). Marks the new clipboard content as
+    // handled so our own copy does not come back as a "path found on the clipboard".
+    void CopyToClipboard(string text)
+    {
+        if (text.Length == 0) return;
+        try
+        {
+            Clipboard.SetText(text);
+            lastClipboardSeq = GetClipboardSequenceNumber();
+        }
+        catch (ExternalException ex) { Program.LogError(ex); }
+    }
+
+    // Files or a folder dragged onto the window: a folder becomes the root, a file opens.
+    void OpenDropped(List<string> paths)
+    {
+        if (paths.FirstOrDefault() is not { } path) return;
+        if (Directory.Exists(path)) SetRoot(path);
+        else if (File.Exists(path) && OpenPath(path) is { } rel) Post(new { type = "open", rel });
+        Activate();
+    }
+
+    // The page sends its document as displayed (code colours, drawn diagrams, light theme); a hidden
+    // web view loads it from __export and prints it to the file the user picks.
+    async void ExportPdf(string rel, string html)
+    {
+        var source = FromRel(rel);
+        using var dlg = new SaveFileDialog
+        {
+            Filter = "PDF (*.pdf)|*.pdf",
+            FileName = Path.ChangeExtension(Path.GetFileName(rel), ".pdf"),
+            InitialDirectory = source is null ? root : Path.GetDirectoryName(source),
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK || web?.CoreWebView2 is not { } main) return;
+        var env = main.Environment;
+        CoreWebView2Controller? controller = null;
+        var ok = false;
+        try
+        {
+            exportHtml = html;
+            controller = await env.CreateCoreWebView2ControllerAsync(Handle);
+            controller.IsVisible = false;
+            controller.Bounds = new Rectangle(0, 0, 1100, 900);
+            var core = controller.CoreWebView2;
+            core.AddWebResourceRequestedFilter(Origin + "*", CoreWebView2WebResourceContext.All);
+            core.WebResourceRequested += OnResourceRequested;
+            var loaded = new TaskCompletionSource<bool>();
+            core.NavigationCompleted += (_, e) => loaded.TrySetResult(e.IsSuccess);
+            core.Navigate(Origin + "__export");
+            if (await loaded.Task)
+            {
+                var print = env.CreatePrintSettings();
+                print.ShouldPrintBackgrounds = true;
+                print.ShouldPrintHeaderAndFooter = false;
+                print.MarginTop = print.MarginBottom = 0.5;
+                print.MarginLeft = print.MarginRight = 0.45;
+                ok = await core.PrintToPdfAsync(dlg.FileName, print);
+            }
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            Program.LogError(ex);
+        }
+        finally
+        {
+            controller?.Close();
+            exportHtml = "";
+        }
+        Post(new { type = "exported", path = dlg.FileName, ok });
     }
 
     // The reading history as the web app shows it: full path, when, and whether the file is still there.
@@ -667,14 +773,17 @@ sealed class MainForm : Form
         var seq = GetClipboardSequenceNumber();
         if (seq == lastClipboardSeq) return;
 
-        string? found = null;
+        string? found = null, hash = null;
         List<string> matches = [];
         try
         {
             if (Clipboard.ContainsFileDropList())
                 found = Clipboard.GetFileDropList().Cast<string>().FirstOrDefault(f => IsListed(f) && File.Exists(f));
             else if (Clipboard.ContainsText() && Clipboard.GetText() is { Length: <= 4000 } text)
-                (found, matches) = FindPathIn(text);
+            {
+                (var pathText, hash) = SplitFragment(text);
+                (found, matches) = FindPathIn(pathText);
+            }
         }
         catch (ExternalException ex)
         {
@@ -693,6 +802,7 @@ sealed class MainForm : Form
             path = found,
             rel = found is not null && IsUnder(found, root) ? ToRel(found) : null,
             matches = found is null ? matches : null,
+            hash,
             fromSelf = ActiveForm == this,
             force,
         };
@@ -864,6 +974,11 @@ sealed class MainForm : Form
                     : Respond(env, Encoding.UTF8.GetBytes(ErrorPage("找不到", rel)), "text/html; charset=utf-8", 404);
                 return;
             }
+            if (rel == "__export")
+            {
+                e.Response = Respond(env, Encoding.UTF8.GetBytes(exportHtml), "text/html; charset=utf-8");
+                return;
+            }
             if (rel == "__api/tree")
             {
                 var deferral = e.GetDeferral();
@@ -922,6 +1037,7 @@ sealed class MainForm : Form
                     lastDark = settings.LastDark,
                     systemDark = Themes.SystemIsDark(),
                     clip = settings.Clip,
+                    startScroll = TakeStartScroll(),
                     history = HistoryItems(),
                     themes = Themes.All.Select(t => new { t.Id, t.Name, t.Dark, bg = t.Hex("bg"), accent = t.Hex("accent"), h3 = t.Hex("h3") }),
                 }, Json);
@@ -990,7 +1106,77 @@ sealed class MainForm : Form
 
     static string ReadText(string path) => new UTF8Encoding(false).GetString(ReadShared(path)).TrimStart('﻿');
 
-    string RenderMarkdown(string path) => Page(Path.GetFileName(path), Markdown.ToHtml(ReadText(path), Pipeline));
+    int TakeStartScroll()
+    {
+        var y = startScroll;
+        startScroll = 0;
+        return y;
+    }
+
+    string RenderMarkdown(string path)
+    {
+        var doc = Markdown.Parse(ReadText(path), Pipeline);
+        using var writer = new StringWriter();
+        var renderer = new HtmlRenderer(writer);
+        Pipeline.Setup(renderer);
+        renderer.Render(doc);
+        writer.Flush();
+        var front = doc.Descendants<YamlFrontMatterBlock>().FirstOrDefault();
+        return Page(Path.GetFileName(path), (front is null ? "" : FrontMatterHtml(front)) + writer);
+    }
+
+    // The YAML header as a collapsed box: name and description stay visible in the summary line,
+    // every field is listed when opened. Nested keys show as parent.child, lists joined with commas,
+    // block scalars (| and >) joined into one value.
+    static string FrontMatterHtml(YamlFrontMatterBlock block)
+    {
+        var rows = new List<(string Key, string Value)>();
+        string parent = "";
+        int blockIndent = -1; // inside a | or > value: lines indented deeper than this belong to it
+        foreach (var raw in block.Lines.ToString().Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            var text = line.Trim();
+            if (text is "" or "---" or "...") continue;
+            var indent = line.Length - line.TrimStart().Length;
+            if (blockIndent >= 0 && indent > blockIndent && rows.Count > 0)
+            {
+                rows[^1] = (rows[^1].Key, (rows[^1].Value + " " + text).Trim());
+                continue;
+            }
+            blockIndent = -1;
+            if (text.StartsWith("- ") && rows.Count > 0)
+            {
+                var item = text[2..].Trim().Trim('"', '\'');
+                rows[^1] = (rows[^1].Key, rows[^1].Value.Length > 0 ? rows[^1].Value + ", " + item : item);
+                continue;
+            }
+            var colon = text.IndexOf(": ") is >= 0 and var c ? c : text.EndsWith(':') ? text.Length - 1 : -1;
+            if (colon <= 0)
+            {
+                if (rows.Count > 0) rows[^1] = (rows[^1].Key, (rows[^1].Value + " " + text).Trim());
+                continue;
+            }
+            var key = text[..colon].Trim();
+            var value = text[(colon + 1)..].Trim();
+            if (value is "|" or "|-" or ">" or ">-" or "|+" or ">+") { value = ""; blockIndent = indent; }
+            value = value.Trim('"', '\'');
+            if (indent == 0) parent = value.Length == 0 && blockIndent < 0 ? key : "";
+            rows.Add((indent > 0 && parent.Length > 0 ? $"{parent}.{key}" : key, value));
+        }
+        var shown = rows.Where(r => r.Value.Length > 0 || !rows.Any(o => o.Key.StartsWith(r.Key + "."))).ToList();
+        if (shown.Count == 0) return "";
+
+        string Find(params string[] keys) => shown.FirstOrDefault(r => keys.Contains(r.Key, StringComparer.OrdinalIgnoreCase)).Value ?? "";
+        var name = Find("name", "title");
+        var description = Find("description", "summary");
+        Func<string, string> enc = s => WebUtility.HtmlEncode(s);
+        var summary = new StringBuilder("<span class=\"fm-label\">文件資訊</span>");
+        if (name.Length > 0) summary.Append($"<span class=\"fm-name\">{enc(name)}</span>");
+        if (description.Length > 0) summary.Append($"<span class=\"fm-desc\">{enc(description)}</span>");
+        var items = string.Concat(shown.Select(r => $"<dt>{enc(r.Key)}</dt><dd>{enc(r.Value)}</dd>"));
+        return $"<details class=\"frontmatter\"><summary>{summary}</summary><dl>{items}</dl></details>";
+    }
 
     string RenderPlain(string path) =>
         Page(Path.GetFileName(path), $"<h1>{WebUtility.HtmlEncode(Path.GetFileName(path))}</h1><pre class=\"plain\"><code>{WebUtility.HtmlEncode(ReadText(path))}</code></pre>");
