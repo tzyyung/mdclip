@@ -109,7 +109,7 @@ const toggleDark = () => applyTheme(resolveTheme(state.theme).dark ? state.lastL
 // ---------- layout: sidebar, outline, focus mode ----------
 
 const layout = Object.assign(
-  { side: true, toc: true, zen: false, sideW: 288, kind: "all", zoom: 1, clip: "auto" },
+  { side: true, toc: true, zen: false, sideW: 288, tocW: 252, kind: "all", zoom: 1, clip: "auto" },
   store.get("layout", {}));
 
 function applyLayout() {
@@ -117,6 +117,7 @@ function applyLayout() {
   body.classList.toggle("no-toc", !layout.toc);
   body.classList.toggle("zen", layout.zen);
   body.style.setProperty("--side-w", layout.sideW + "px");
+  body.style.setProperty("--toc-w", layout.tocW + "px");
   $("toggle-side").classList.toggle("on", layout.side && !layout.zen);
   $("toggle-toc").classList.toggle("on", layout.toc && !layout.zen);
   $("toggle-zen").classList.toggle("on", layout.zen);
@@ -173,25 +174,33 @@ function setupPeek(hotId, panel, cls) {
   panel.addEventListener("focusout", () => { if (!panel.matches(":hover")) hide(); });
 }
 
+// The file tree's width is measured from the left edge, the outline's from the right; double-click resets.
 function setupResizer() {
-  const bar = $("resizer");
-  bar.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    body.classList.add("dragging");
-    const move = (ev) => {
-      layout.sideW = Math.round(Math.min(Math.max(ev.clientX, 200), Math.min(620, innerWidth * 0.5)));
-      body.style.setProperty("--side-w", layout.sideW + "px");
-    };
-    const up = () => {
-      body.classList.remove("dragging");
-      removeEventListener("mousemove", move);
-      removeEventListener("mouseup", up);
-      applyLayout();
-    };
-    addEventListener("mousemove", move);
-    addEventListener("mouseup", up);
-  });
-  bar.addEventListener("dblclick", () => { layout.sideW = 288; applyLayout(); });
+  const bars = [
+    { bar: $("resizer"), key: "sideW", prop: "--side-w", reset: 288, min: 200, width: (x) => x },
+    { bar: $("resizer-toc"), key: "tocW", prop: "--toc-w", reset: 252, min: 180, width: (x) => innerWidth - x },
+  ];
+  for (const { bar, key, prop, reset, min, width } of bars) {
+    bar.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      body.classList.add("dragging");
+      bar.classList.add("active");
+      const move = (ev) => {
+        layout[key] = Math.round(Math.min(Math.max(width(ev.clientX), min), Math.min(620, innerWidth * 0.4)));
+        body.style.setProperty(prop, layout[key] + "px");
+      };
+      const up = () => {
+        body.classList.remove("dragging");
+        bar.classList.remove("active");
+        removeEventListener("mousemove", move);
+        removeEventListener("mouseup", up);
+        applyLayout();
+      };
+      addEventListener("mousemove", move);
+      addEventListener("mouseup", up);
+    });
+    bar.addEventListener("dblclick", () => { layout[key] = reset; applyLayout(); });
+  }
 }
 
 // ---------- file tree ----------

@@ -15,8 +15,8 @@ body {
   --sw: var(--side-w); --tw: var(--toc-w); --th: var(--top-h);
   display: grid;
   grid-template-rows: var(--th) minmax(0, 1fr);
-  grid-template-columns: var(--sw) 0 minmax(0, 1fr) var(--tw);
-  grid-template-areas: "top top top top" "side rez doc toc";
+  grid-template-columns: var(--sw) 0 minmax(0, 1fr) 0 var(--tw);
+  grid-template-areas: "top top top top top" "side rez doc rez-toc toc";
   background: var(--bg); color: var(--fg);
   font: 13.5px/1.5 var(--ui);
   overflow: hidden;
@@ -33,10 +33,10 @@ svg { display: block; }
 body.no-side { --sw: 0px; }
 body.no-toc { --tw: 0px; }
 body.zen { --sw: 0px; --tw: 0px; --th: 0px; }
-.no-side .side, .no-side .resizer, .zen .side, .zen .resizer, .no-toc .toc, .zen .toc, .zen .topbar { display: none; }
+.no-side #resizer, .no-side .side, .zen .side, .zen .resizer, .no-toc .toc, .no-toc #resizer-toc, .zen .toc, .zen .topbar { display: none; }
 @media (max-width: 1100px) {
   body { --tw: 0px; }
-  .toc { display: none; }
+  .toc, #resizer-toc { display: none; }
   #toggle-toc { display: none; }
 }
 
@@ -150,8 +150,9 @@ body.zen { --sw: 0px; --tw: 0px; --th: 0px; }
 .none { padding: 10px 12px; color: var(--muted); font-size: 12.5px; }
 
 .resizer { grid-area: rez; position: relative; z-index: 5; }
+#resizer-toc { grid-area: rez-toc; }
 .resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: -3px; width: 6px; cursor: col-resize; }
-.resizer:hover::after, body.dragging .resizer::after { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.resizer:hover::after, .resizer.active::after { background: color-mix(in srgb, var(--accent) 45%, transparent); }
 body.dragging { cursor: col-resize; user-select: none; }
 body.dragging iframe { pointer-events: none; }
 
