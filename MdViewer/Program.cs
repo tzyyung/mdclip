@@ -10,14 +10,16 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
-        var path = args.FirstOrDefault();
+        // --tray: started at sign-in; stay in the notification area until needed.
+        var startHidden = args.Contains("--tray");
+        var path = args.FirstOrDefault(a => a != "--tray");
         using var mutex = new Mutex(true, MutexName, out var first);
-        if (!first && SendToRunningInstance(path)) return;
+        if (!first && (startHidden || SendToRunningInstance(path))) return;
 
         ApplicationConfiguration.Initialize();
         Application.ThreadException += (_, e) => LogError(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => LogError(e.ExceptionObject as Exception);
-        Application.Run(new MainForm(path));
+        Application.Run(new MainForm(path, startHidden));
     }
 
     // Hands the path (or an empty line, meaning "just show yourself") to the window that is already open.

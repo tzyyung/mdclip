@@ -38,7 +38,14 @@ sealed class MainForm : Form
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
         { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
-    WebView2 web = new() { Dock = DockStyle.Fill };
+    WebView2? web; // null while the window is hidden in the tray, so the browser processes can exit
+    readonly NotifyIcon tray = new() { Text = "MdViewer" };
+    readonly bool startHidden;
+    bool exiting, showQuietly, appReady, listening;
+    string? lastOpened; // full path of the open document, reopened when the window comes back
+    readonly List<object> afterReady = []; // messages for a page that is still loading
+    object? hintedClipboard; // clipboard find announced in a tray notification, opened if it is clicked
+    IntPtr returnFocusTo; // the window the user was typing in when a clipboard copy brought ours back
     readonly FileSystemWatcher watcher = new()
     {
         IncludeSubdirectories = true,
@@ -58,15 +65,16 @@ sealed class MainForm : Form
     readonly System.Windows.Forms.Timer saveDelay = new() { Interval = 1000 }; // batches reading-position saves
     bool systemDark = Themes.SystemIsDark();
 
-    public MainForm(string? startPath)
+    // startHidden: launched at sign-in; stay in the tray until something needs the window.
+    public MainForm(string? startPath, bool startHidden)
     {
+        this.startHidden = startHidden;
         Text = "MdViewer";
+        Icon = AppIcon;
         Size = new Size(1440, 920);
         StartPosition = FormStartPosition.CenterScreen;
         theme = Themes.Resolve(settings.Theme);
         BackColor = theme.Color("bg");
-        web.DefaultBackgroundColor = BackColor;
-        Controls.Add(web);
 
         watcher.Changed += OnFsEvent;
         watcher.Created += OnFsEvent;
@@ -74,7 +82,8 @@ sealed class MainForm : Form
         watcher.Renamed += OnFsEvent;
         clipboardDelay.Tick += (_, _) => ReadClipboard();
         saveDelay.Tick += (_, _) => { saveDelay.Stop(); settings.Save(); };
-        FormClosing += (_, _) => { if (saveDelay.Enabled) settings.Save(); };
+        FormClosing += OnFormClosing;
+        VisibleChanged += (_, _) => { if (Visible && web is null) _ = StartWebViewAsync(); };
         SystemEvents.UserPreferenceChanged += OnSystemPreference;
         Disposed += (_, _) => SystemEvents.UserPreferenceChanged -= OnSystemPreference;
         debounce.Tick += (_, _) =>
@@ -85,36 +94,44 @@ sealed class MainForm : Form
             changedFiles.Clear();
         };
 
-        Load += async (_, _) =>
-        {
-            ApplyTitleBar();
-            ListenForOpenRequests();
-            PruneMissingDirs();
-            await InitAsync(startPath);
-        };
+        SetupTray();
+        lastOpened = ChooseRoot(startPath);
     }
 
-    async Task InitAsync(string? startPath)
-    {
-        var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MdViewer", "WebView2");
-        try
-        {
-            await web.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, dataDir));
-        }
-        catch (COMException ex)
-        {
-            Program.LogError(ex);
-            // The shared profile is held by a browser process started with other options
-            // (e.g. a leftover debug session). Fall back to a profile private to this process.
-            Controls.Remove(web);
-            web.Dispose();
-            web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = BackColor };
-            Controls.Add(web);
-            var privateDir = Path.Combine(Path.GetTempPath(), "MdViewer", "WebView2-" + Environment.ProcessId);
-            await web.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, privateDir));
-        }
+    internal static readonly Icon AppIcon = LoadAppIcon();
 
-        var core = web.CoreWebView2;
+    static Icon LoadAppIcon()
+    {
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("app.ico")!;
+        return new Icon(stream);
+    }
+
+    // Returns the file to open first, if the start path is one.
+    string? ChooseRoot(string? startPath)
+    {
+        if (startPath is not null && File.Exists(startPath))
+        {
+            var full = Path.GetFullPath(startPath);
+            SetRoot(FindRoot(full));
+            return full;
+        }
+        if (startPath is not null && Directory.Exists(startPath)) SetRoot(startPath);
+        else if (Directory.Exists(settings.Root)) SetRoot(settings.Root);
+        else SetRoot(Environment.CurrentDirectory);
+        return null;
+    }
+
+    // ---------- web view: created when the window shows, released when it hides ----------
+
+    async Task StartWebViewAsync()
+    {
+        appReady = false;
+        WebView2 view;
+        try { view = await CreateWebViewAsync(); }
+        catch (Exception) when (web is null) { return; } // hidden again while starting
+        if (web != view) return;
+
+        var core = view.CoreWebView2;
         core.Settings.IsStatusBarEnabled = true;
         core.Settings.IsZoomControlEnabled = false; // the web app zooms the document text itself
         core.AddWebResourceRequestedFilter(Origin + "*", CoreWebView2WebResourceContext.All);
@@ -125,17 +142,186 @@ sealed class MainForm : Form
         core.WebMessageReceived += OnMessage;
 
         string? startRel = null;
-        if (startPath is not null && File.Exists(startPath))
+        if (lastOpened is { } file && File.Exists(file))
         {
-            var full = Path.GetFullPath(startPath);
-            SetRoot(FindRoot(full));
-            startRel = ToRel(full);
+            if (!IsUnder(file, root)) SetRoot(FindRoot(file));
+            startRel = ToRel(file);
         }
-        else if (startPath is not null && Directory.Exists(startPath)) SetRoot(startPath);
-        else if (Directory.Exists(settings.Root)) SetRoot(settings.Root);
-        else SetRoot(Environment.CurrentDirectory);
-
         core.Navigate(Origin + "__app/" + (startRel is null ? "" : "#" + Uri.EscapeDataString(startRel)));
+    }
+
+    async Task<WebView2> CreateWebViewAsync()
+    {
+        var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MdViewer", "WebView2");
+        var view = AddWebView();
+        try
+        {
+            await view.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, dataDir));
+            return view;
+        }
+        catch (COMException ex) when (web == view)
+        {
+            Program.LogError(ex);
+            // The shared profile is held by a browser process started with other options
+            // (e.g. a leftover debug session). Fall back to a profile private to this process.
+            Controls.Remove(view);
+            view.Dispose();
+            view = AddWebView();
+            var privateDir = Path.Combine(Path.GetTempPath(), "MdViewer", "WebView2-" + Environment.ProcessId);
+            await view.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, privateDir));
+            return view;
+        }
+    }
+
+    WebView2 AddWebView()
+    {
+        web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = BackColor };
+        Controls.Add(web);
+        return web;
+    }
+
+    void ReleaseWebView()
+    {
+        if (web is not { } view) return;
+        web = null;
+        appReady = false;
+        afterReady.Clear();
+        Controls.Remove(view);
+        view.Dispose();
+        // Hidden in the tray for possibly hours: give back what the page used.
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+    }
+
+    // ---------- tray: closing the window keeps watching the clipboard ----------
+
+    void SetupTray()
+    {
+        var menu = new ContextMenuStrip();
+        var open = new ToolStripMenuItem("開啟 MdViewer", null, (_, _) => ShowFromTray(activate: true));
+        open.Font = new Font(open.Font, FontStyle.Bold);
+        var clip = new ToolStripMenuItem("剪貼簿有 .md 或圖片路徑時");
+        foreach (var (mode, label) in new[] { ("auto", "自動開啟"), ("hint", "只提示"), ("off", "不理會") })
+            clip.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetClipMode(mode)) { Tag = mode });
+        var autostart = new ToolStripMenuItem("開機時在背景啟動", null, (_, _) => SetAutostart(!IsAutostart()));
+        var exit = new ToolStripMenuItem("結束", null, (_, _) => ExitApp());
+        menu.Items.AddRange([open, new ToolStripSeparator(), clip, autostart, new ToolStripSeparator(), exit]);
+        menu.Opening += (_, _) =>
+        {
+            foreach (ToolStripMenuItem item in clip.DropDownItems) item.Checked = (string)item.Tag! == settings.Clip;
+            autostart.Checked = IsAutostart();
+        };
+
+        tray.Icon = AppIcon;
+        tray.ContextMenuStrip = menu;
+        tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ShowFromTray(activate: true); };
+        tray.BalloonTipClicked += (_, _) =>
+        {
+            if (hintedClipboard is { } message) PostWhenReady(message);
+            hintedClipboard = null;
+            ShowFromTray(activate: true);
+        };
+        tray.BalloonTipClosed += (_, _) => hintedClipboard = null;
+        tray.Visible = true;
+        Disposed += (_, _) => tray.Dispose();
+    }
+
+    // The close button hides the window; only "結束" in the tray menu (or signing out) ends the app.
+    void OnFormClosing(object? sender, FormClosingEventArgs e)
+    {
+        if (e.CloseReason == CloseReason.UserClosing && !exiting)
+        {
+            e.Cancel = true;
+            HideToTray();
+            return;
+        }
+        if (saveDelay.Enabled) settings.Save();
+        tray.Visible = false;
+    }
+
+    void HideToTray()
+    {
+        if (saveDelay.Enabled) { saveDelay.Stop(); settings.Save(); }
+        Hide();
+        ReleaseWebView();
+        if (settings.TrayHintShown) return;
+        settings.TrayHintShown = true;
+        settings.Save();
+        tray.ShowBalloonTip(8000, "MdViewer 還在背景執行",
+            "複製 .md 或圖片路徑時會自動開啟。要結束程式，請在這個圖示按右鍵 →「結束」。", ToolTipIcon.Info);
+    }
+
+    // activate: false when a clipboard copy brings the window back, so typing stays in the app the user is in.
+    void ShowFromTray(bool activate)
+    {
+        if (!activate && GetForegroundWindow() is var current && current != Handle) returnFocusTo = current;
+        if (!Visible)
+        {
+            showQuietly = !activate;
+            Show();
+            showQuietly = false;
+        }
+        if (!activate) { BringToTop(); GiveFocusBack(); return; }
+        returnFocusTo = IntPtr.Zero;
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
+    protected override bool ShowWithoutActivation => showQuietly;
+
+    // Showing a window for the first time, or creating its web view, can still take the focus;
+    // hand it back to where the user was typing. Called after the show and again once the page is up.
+    void GiveFocusBack()
+    {
+        if (returnFocusTo != IntPtr.Zero && GetForegroundWindow() == Handle) SetForegroundWindow(returnFocusTo);
+    }
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    static extern bool SetForegroundWindow(IntPtr hwnd);
+
+    // Started at sign-in: create the window (the clipboard listener needs it) but keep it hidden.
+    protected override void SetVisibleCore(bool value)
+    {
+        if (startHidden && !IsHandleCreated)
+        {
+            CreateHandle();
+            value = false;
+        }
+        base.SetVisibleCore(value);
+    }
+
+    void ExitApp()
+    {
+        exiting = true;
+        tray.Visible = false;
+        Close();
+    }
+
+    void SetClipMode(string mode)
+    {
+        settings.Clip = mode;
+        settings.Save();
+        Post(new { type = "clipMode", mode });
+    }
+
+    const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    static string AutostartCommand => $"\"{Environment.ProcessPath}\" --tray";
+
+    static bool IsAutostart()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKey);
+        return key?.GetValue("MdViewer") as string == AutostartCommand;
+    }
+
+    static void SetAutostart(bool on)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(RunKey);
+        if (on) key.SetValue("MdViewer", AutostartCommand);
+        else key.DeleteValue("MdViewer", throwOnMissingValue: false);
     }
 
     // ---------- single instance ----------
@@ -163,11 +349,11 @@ sealed class MainForm : Form
 
     void OpenFromOtherInstance(string? path)
     {
-        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
-        Activate();
-        if (string.IsNullOrEmpty(path)) return;
-        if (Directory.Exists(path)) SetRoot(path);
-        else if (File.Exists(path) && OpenPath(path) is { } rel) Post(new { type = "open", rel });
+        if (string.IsNullOrEmpty(path)) { }
+        else if (Directory.Exists(path)) SetRoot(path);
+        else if (File.Exists(path) && web is null) lastOpened = path; // the page about to load opens it
+        else if (File.Exists(path) && OpenPath(path) is { } rel) PostWhenReady(new { type = "open", rel });
+        ShowFromTray(activate: true);
     }
 
     // ---------- root & paths ----------
@@ -180,7 +366,19 @@ sealed class MainForm : Form
         watcher.EnableRaisingEvents = true;
         settings.Root = root;
         settings.Save();
+        if (lastOpened is not null && !IsUnder(lastOpened, root)) lastOpened = null;
         Post(new { type = "root", root, name = RootName });
+        if (web is null) ScanKnownFiles(); // no page to ask for the tree, but clipboard lookups need it
+    }
+
+    void ScanKnownFiles()
+    {
+        var r = root;
+        Task.Run(() =>
+        {
+            var files = Flatten(BuildChildren(new DirectoryInfo(r), r) ?? []).ToList();
+            if (r == root) knownFiles = files;
+        });
     }
 
     string RootName => Path.GetFileName(root) is { Length: > 0 } name ? name : root;
@@ -254,9 +452,20 @@ sealed class MainForm : Form
             case "theme": ApplyTheme(Str("id")); break;
             case "title": Text = Str("text") is { Length: > 0 } t ? $"{t} — MdViewer" : "MdViewer"; break;
             case "raise": BringToTop(); break;
+            case "ready":
+                appReady = true;
+                foreach (var waiting in afterReady) Post(waiting);
+                afterReady.Clear();
+                GiveFocusBack();
+                returnFocusTo = IntPtr.Zero;
+                break;
+            case "clipMode":
+                if (Str("mode") is "auto" or "hint" or "off") { settings.Clip = Str("mode"); settings.Save(); }
+                break;
             case "opened":
                 if (FromRel(Str("rel")) is { } opened)
                 {
+                    lastOpened = opened;
                     settings.RememberDir(Path.GetDirectoryName(opened)!);
                     settings.RememberFile(opened);
                     Post(new { type = "history", items = HistoryItems() });
@@ -385,7 +594,13 @@ sealed class MainForm : Form
 
     void Post(object message)
     {
-        if (web.CoreWebView2 is { } core) core.PostWebMessageAsJson(JsonSerializer.Serialize(message, Json));
+        if (web?.CoreWebView2 is { } core) core.PostWebMessageAsJson(JsonSerializer.Serialize(message, Json));
+    }
+
+    // For messages that must reach the page even if it is still loading or not created yet.
+    void PostWhenReady(object message)
+    {
+        if (appReady) Post(message); else afterReady.Add(message);
     }
 
     void PickFile()
@@ -419,6 +634,11 @@ sealed class MainForm : Form
     {
         base.OnHandleCreated(e);
         AddClipboardFormatListener(Handle);
+        ApplyTitleBar();
+        if (listening) return;
+        listening = true;
+        ListenForOpenRequests();
+        PruneMissingDirs();
     }
 
     protected override void WndProc(ref Message m)
@@ -466,14 +686,29 @@ sealed class MainForm : Form
         lastClipboardSeq = seq;
 
         if (found is null && matches.Count == 0) return;
-        Post(new
+        // force: open even in "hint" mode (the user clicked the tray notification).
+        object Message(bool? force) => new
         {
             type = "clipboard",
             path = found,
             rel = found is not null && IsUnder(found, root) ? ToRel(found) : null,
             matches = found is null ? matches : null,
             fromSelf = ActiveForm == this,
-        });
+            force,
+        };
+        if (Visible) { Post(Message(null)); return; }
+
+        // Hidden in the tray: the page is not there to decide, so follow the mode here.
+        if (settings.Clip == "off") return;
+        if (settings.Clip == "hint")
+        {
+            hintedClipboard = Message(true);
+            var name = Path.GetFileName(found ?? matches[0]);
+            tray.ShowBalloonTip(6000, "剪貼簿裡有可以開啟的檔案", $"{name}（點這裡開啟）", ToolTipIcon.None);
+            return;
+        }
+        PostWhenReady(Message(null));
+        ShowFromTray(activate: false);
     }
 
     (string? Path, List<string> Matches) FindPathIn(string text)
@@ -585,7 +820,7 @@ sealed class MainForm : Form
         }
         settings.Save();
         BackColor = theme.Color("bg");
-        web.DefaultBackgroundColor = BackColor;
+        if (web is not null) web.DefaultBackgroundColor = BackColor;
         ApplyTitleBar();
     }
 
@@ -618,7 +853,7 @@ sealed class MainForm : Form
 
     void OnResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
     {
-        var env = web.CoreWebView2.Environment;
+        var env = ((CoreWebView2)sender!).Environment;
         var rel = Uri.UnescapeDataString(new Uri(e.Request.Uri).AbsolutePath.TrimStart('/'));
         try
         {
@@ -686,6 +921,7 @@ sealed class MainForm : Form
                     lastLight = settings.LastLight,
                     lastDark = settings.LastDark,
                     systemDark = Themes.SystemIsDark(),
+                    clip = settings.Clip,
                     history = HistoryItems(),
                     themes = Themes.All.Select(t => new { t.Id, t.Name, t.Dark, bg = t.Hex("bg"), accent = t.Hex("accent"), h3 = t.Hex("h3") }),
                 }, Json);

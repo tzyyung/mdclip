@@ -110,7 +110,7 @@ const toggleDark = () => applyTheme(resolveTheme(state.theme).dark ? state.lastL
 
 const layout = Object.assign(
   { side: true, toc: true, zen: false, sideW: 288, tocW: 252, kind: "all", zoom: 1, clip: "auto" },
-  store.get("layout", {}));
+  store.get("layout", {}), { clip: cfg.clip ?? "auto" }); // the host owns the clipboard mode (the tray menu sets it too)
 
 function applyLayout() {
   body.classList.toggle("no-side", !layout.side);
@@ -984,7 +984,7 @@ function openMoreMenu() {
 
 $("more-menu").addEventListener("click", (e) => {
   const clip = e.target.closest("button[data-clip]");
-  if (clip) { layout.clip = clip.dataset.clip; store.set("layout", layout); closeMenus(); return; }
+  if (clip) { layout.clip = clip.dataset.clip; store.set("layout", layout); post({ type: "clipMode", mode: layout.clip }); closeMenus(); return; }
   const b = e.target.closest("button[data-act]");
   if (!b) return;
   closeMenus();
@@ -1121,7 +1121,8 @@ $("toast").addEventListener("mouseleave", () => { if (!toastUntilInteraction) ar
 
 // The host reports copied markdown/image paths it can find on disk.
 function onClipboard(m) {
-  if (layout.clip === "off") return;
+  const mode = m.force ? "auto" : layout.clip; // force: the user clicked the tray notification
+  if (mode === "off") return;
   if (!m.fromSelf) post({ type: "raise" }); // copied elsewhere: make sure the viewer is visible
   const CLIP_MS = "interact";
   if (m.matches) {
@@ -1139,7 +1140,7 @@ function onClipboard(m) {
   if (m.rel && m.rel === state.current) { toast("剪貼簿的檔案已經開著：" + m.rel, null, CLIP_MS); return; }
   const label = m.rel ?? m.path;
   const open = () => (m.rel ? navigate(m.rel) : post({ type: "resolve", text: m.path, id: (pal.pendingId = "clip" + Date.now()) }));
-  if (layout.clip === "hint") { toast("剪貼簿：" + label, { label: "開啟", run: open }, CLIP_MS); return; }
+  if (mode === "hint") { toast("剪貼簿：" + label, { label: "開啟", run: open }, CLIP_MS); return; }
   const from = state.current;
   open();
   // A copy made inside the viewer may just be text being read; offer a one-click way back.
@@ -1212,6 +1213,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "clipboard": onClipboard(m); break;
     case "history": state.history = m.items; break;
     case "searchResults": onSearchResults(m); break;
+    case "clipMode": layout.clip = m.mode; store.set("layout", layout); break;
     case "system":
       cfg.systemDark = m.dark;
       if (state.theme === "auto") applyTheme("auto", false);
@@ -1270,3 +1272,4 @@ updateChrome();
 loadTree();
 const start = decodeURIComponent(location.hash.slice(1));
 if (start) navigate(start); else showEmpty();
+post({ type: "ready" }); // the host holds clipboard finds and open requests until now

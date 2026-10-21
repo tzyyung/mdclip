@@ -131,6 +131,8 @@ sealed class ThemeSettings
 
     public string Theme = Themes.Auto, LastLight = "colorful-light", LastDark = "github-dark", Root = "";
     public List<string> Dirs = [];
+    public string Clip = "auto";      // clipboard paths: auto (open), hint, off
+    public bool TrayHintShown;        // the "still running in the tray" notice was shown once
     public List<HistoryEntry> History = []; // most recently read first
 
     public static ThemeSettings Load()
@@ -145,6 +147,8 @@ sealed class ThemeSettings
                 else if (key == "light") s.LastLight = value;
                 else if (key == "dark") s.LastDark = value;
                 else if (key == "root") s.Root = value;
+                else if (key == "clip" && value is "auto" or "hint" or "off") s.Clip = value;
+                else if (key == "trayhint") s.TrayHintShown = value == "1";
                 else if (key == "dir" && value.Length > 0) s.Dirs.Add(value);
                 else if (key == "hist" && HistoryEntry.Parse(value) is { } h) s.History.Add(h);
             }
@@ -159,7 +163,7 @@ sealed class ThemeSettings
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
             File.WriteAllLines(FilePath,
-                [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", .. Dirs.Select(d => $"dir={d}"), .. History.Select(h => $"hist={h}")]);
+                [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", $"clip={Clip}", $"trayhint={(TrayHintShown ? 1 : 0)}", .. Dirs.Select(d => $"dir={d}"), .. History.Select(h => $"hist={h}")]);
         }
         catch (IOException) { }
     }
