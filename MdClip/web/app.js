@@ -985,6 +985,7 @@ const HELP = [
   ]],
   ["剪貼簿與背景", [
     [["複製路徑"], "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；路徑夾在一大段文字裡只提示，一次複製多個檔案會列出來讓你選。在「更多 → 剪貼簿設定」調整"],
+    [["複製圖片路徑"], "直接浮出預覽，不換頁：滾輪縮放、拖曳移動、← → 看同一資料夾的其他圖片（複製多張就看那幾張），Esc 關閉"],
     [["✕ 關閉"], "縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」"],
     [["系統匣選單"], "最近讀過的檔案、開機時在背景啟動"],
   ]],
@@ -1496,21 +1497,30 @@ addEventListener("blur", () => setTimeout(() => { if (document.activeElement ===
 
 // ---------- lightbox for images inside a document ----------
 
-const lb = { imgs: [], i: 0, viewer: null };
+// items: { src, name } — the pictures of a document, or pictures from the clipboard (with their folder).
+const lb = { items: [], i: 0, viewer: null };
 
+// The pictures of the open document, starting at the one clicked.
 function openLightbox(doc, pic) {
+  const imgs = [...doc.querySelectorAll("main img")];
+  showPictures(imgs.map((img) => {
+    const src = img.currentSrc || img.src;
+    return { src, name: img.alt || decodeURIComponent(src.split("?")[0].split("/").pop()) };
+  }), Math.max(0, imgs.indexOf(pic)));
+}
+
+// Over the page, the document staying as it is: wheel zoom, drag, ← → through the set, Esc closes.
+function showPictures(items, start = 0) {
   closeMenus();
-  lb.imgs = [...doc.querySelectorAll("main img")];
-  lb.i = Math.max(0, lb.imgs.indexOf(pic));
+  lb.items = items;
+  lb.i = start;
   $("lightbox").hidden = false;
   showLightboxImage();
 }
 
 function showLightboxImage() {
-  const pic = lb.imgs[lb.i];
-  const src = pic.currentSrc || pic.src;
-  const name = pic.alt || decodeURIComponent(src.split("?")[0].split("/").pop());
-  const many = lb.imgs.length > 1;
+  const { src, name } = lb.items[lb.i];
+  const many = lb.items.length > 1;
   lb.viewer?.destroy();
   $("lightbox").innerHTML =
     `<div class="zoom-stage" id="lb-stage"><img alt=""></div>` +
@@ -1518,12 +1528,12 @@ function showLightboxImage() {
     (many ? `<button class="icon lb-prev" title="上一張 (←)">${icon("back")}</button><button class="icon lb-next" title="下一張 (→)">${icon("forward")}</button>` : "");
   const img = $("lightbox").querySelector("img");
   img.src = src;
-  lb.viewer = mdZoom($("lb-stage"), img, { label: many ? `${name}　${lb.i + 1} / ${lb.imgs.length}` : name });
+  lb.viewer = mdZoom($("lb-stage"), img, { label: many ? `${name}　${lb.i + 1} / ${lb.items.length}` : name });
 }
 
 function stepLightbox(delta) {
-  if (lb.imgs.length < 2) return;
-  lb.i = (lb.i + delta + lb.imgs.length) % lb.imgs.length;
+  if (lb.items.length < 2) return;
+  lb.i = (lb.i + delta + lb.items.length) % lb.items.length;
   showLightboxImage();
 }
 
@@ -1615,6 +1625,12 @@ $("toast").addEventListener("mouseleave", () => { if (!toastUntilInteraction) ar
 // tray notification.
 function onClipboard(m) {
   const CLIP_MS = "interact", listAll = () => post({ type: "clipList" });
+  if (m.preview) { // pictures: looked at over the page, the document stays
+    const show = () => showPictures(m.preview.items, m.preview.start);
+    if (m.action === "Preview") show();
+    else toast((m.action === "Offer" ? "剪貼簿：" : "剪貼簿裡提到：") + m.preview.items[m.preview.start].name, { label: "預覽", run: show }, CLIP_MS);
+    return;
+  }
   if (m.files) {
     const n = m.files.length, pick = () => openPick(m.files, m.more);
     if (m.action === "OpenFirst") {

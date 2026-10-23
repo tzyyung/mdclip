@@ -10,17 +10,20 @@ public enum ClipAction
     Mention,   // the text merely mentions files (more other words than allowed): offer quietly
     List,      // several files: offer the list (or show it at once when asked for)
     OpenFirst, // several files, "open the first": open it and offer the rest
+    Preview,   // pictures: show them over the page (wheel zoom, ← → for the next one); the document stays
 }
 
 public static class ClipboardPolicy
 {
     // deliberate: few other words came with the paths (see PathFinder.Analyze). force: the user asked for
     // it by clicking the tray notification, so neither the mode nor the passage holds it back.
-    public static ClipAction Decide(string mode, string multi, bool deliberate, bool severalFiles, bool force)
+    // pictures: everything found is a picture, which is looked at in place rather than opened.
+    public static ClipAction Decide(string mode, string multi, bool deliberate, bool severalFiles, bool force, bool pictures = false)
     {
         if (!force && mode == Settings.ClipOff) return ClipAction.None;
         if (!force && !deliberate) return ClipAction.Mention;
-        if (!force && mode == Settings.ClipHint) return severalFiles ? ClipAction.List : ClipAction.Offer;
+        if (!force && mode == Settings.ClipHint) return severalFiles && !pictures ? ClipAction.List : ClipAction.Offer;
+        if (pictures) return ClipAction.Preview;
         if (!severalFiles) return ClipAction.Open;
         return multi == Settings.MultiFirst ? ClipAction.OpenFirst : ClipAction.List;
     }

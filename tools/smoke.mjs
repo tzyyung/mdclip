@@ -150,6 +150,21 @@ await check("heading link copies and reopens at the heading", async () => {
   expect(top >= 0 && top < 120, "heading is at " + top + "px");
 });
 
+await check("clipboard: a copied picture is previewed over the page", async () => {
+  const page = await js("state.current");
+  setClipboard(path.join(fixtures, "pics", "dot.png"));
+  await waitFor("!$('lightbox').hidden", 5000);
+  expect(await js("state.current") === page, "the page changed");
+  const names = await js("lb.items.map(p => p.name).join(',')");
+  expect(names === "dot.png,evil.svg" && await js("lb.i") === 0, "pictures: " + names);
+  const loaded = await js("new Promise(r => { const img = $('lightbox').querySelector('img'); img.complete ? r(img.naturalWidth) : img.onload = () => r(img.naturalWidth); })");
+  expect(loaded > 0, "the picture did not load");
+  await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))`);
+  expect(await js("lb.i") === 1, "→ did not move to the next picture");
+  await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
+  expect(await js("$('lightbox').hidden"), "Esc did not close it");
+});
+
 await check("clipboard: bare file name opens", async () => {
   setClipboard("other.md");
   await waitFor(`state.current === ${JSON.stringify(rel("other.md"))}`, 5000);

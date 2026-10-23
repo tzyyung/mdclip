@@ -748,6 +748,28 @@ sealed class MainForm : Form
 
     string? clipText; // the last clipboard text that named files, for listing them all on request
 
+    // Pictures shown over the page from the clipboard. The page may load only these, by number
+    // (/__preview/<set>/<n>); the last few sets are kept for toasts still on screen.
+    readonly Dictionary<int, List<string>> previews = [];
+    int previewSet;
+
+    // The pictures a clipboard find is about, to look through over the page: the copied pictures, or one
+    // picture and the others in its folder. Null when the find is not all pictures.
+    object? PreviewOf(string? found, List<string> files)
+    {
+        var (items, start) = files.Count > 1 && files.All(IsImage) ? (files, 0)
+            : (found ?? (files.Count == 1 ? files[0] : null)) is { } one && IsImage(one) ? Pictures.Beside(one)
+            : (null, 0);
+        if (items is null) return null;
+        previews[++previewSet] = items;
+        previews.Remove(previewSet - 5);
+        return new { start, items = items.Select((p, i) => new { src = $"/__preview/{previewSet}/{i}", name = Path.GetFileName(p), path = p }) };
+    }
+
+    string? PreviewPath(string rel) =>
+        rel.Split('/') is ["__preview", var set, var n] && int.TryParse(set, out var s) && int.TryParse(n, out var i)
+        && previews.TryGetValue(s, out var items) && i >= 0 && i < items.Count ? items[i] : null;
+
     object FileItems(IEnumerable<string> files) => files.Select(f => new { path = f, rel = RelIfUnder(f) }).ToList();
 
     void ReadClipboard()
@@ -789,6 +811,7 @@ sealed class MainForm : Form
         // What to do is decided once, here (ClipboardPolicy); the page carries it out. force: the user clicked
         // the tray notification.
         var fromSelf = ActiveForm == this;
+        var preview = PreviewOf(found, files);
         object Message(ClipAction action, bool force) => new
         {
             type = "clipboard",
@@ -797,12 +820,13 @@ sealed class MainForm : Form
             rel = found is null ? null : RelIfUnder(found),
             matches = found is null && matches.Count > 0 ? matches : null,
             files = files.Count > 0 ? FileItems(files) : null,
+            preview,
             more,
             hash,
             fromSelf,
             force,
         };
-        ClipAction Decide(bool force) => ClipboardPolicy.Decide(settings.Clip, settings.ClipMulti, deliberate, files.Count > 0, force);
+        ClipAction Decide(bool force) => ClipboardPolicy.Decide(settings.Clip, settings.ClipMulti, deliberate, files.Count > 0, force, preview is not null);
         var action = Decide(force: false);
         if (action == ClipAction.None) return;
         if (Visible)
@@ -890,6 +914,13 @@ sealed class MainForm : Form
             if (rel == "__export")
             {
                 e.Response = Html(env, exportHtml);
+                return;
+            }
+            if (rel.StartsWith("__preview/"))
+            {
+                e.Response = PreviewPath(rel) is { } picture && SafePath.FileExists(picture)
+                    ? Respond(env, TextFiles.ReadBytes(picture), ContentType(picture)!, policy: DocumentPages.DocumentPolicy)
+                    : Html(env, pages.Error("找不到圖片", rel), 404);
                 return;
             }
             if (rel == "__api/tree")

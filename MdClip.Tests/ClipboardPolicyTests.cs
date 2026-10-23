@@ -24,6 +24,17 @@ public sealed class ClipboardPolicyTests
     public void Decide(string mode, string multi, bool deliberate, bool several, bool force, ClipAction expected) =>
         Assert.Equal(expected, ClipboardPolicy.Decide(mode, multi, deliberate, several, force));
 
+    // Pictures are looked at in place: previewed where a document would open, offered where it would be.
+    [Theory]
+    [InlineData(Auto, List, true, false, false, ClipAction.Preview)]
+    [InlineData(Auto, First, true, true, false, ClipAction.Preview)]
+    [InlineData(Auto, List, false, false, false, ClipAction.Mention)]
+    [InlineData(Hint, List, true, true, false, ClipAction.Offer)]
+    [InlineData(Off, List, true, false, false, ClipAction.None)]
+    [InlineData(Hint, List, true, false, true, ClipAction.Preview)]
+    public void Decide_for_pictures(string mode, string multi, bool deliberate, bool several, bool force, ClipAction expected) =>
+        Assert.Equal(expected, ClipboardPolicy.Decide(mode, multi, deliberate, several, force, pictures: true));
+
     [Fact]
     public void Raising_and_notifying()
     {
@@ -31,6 +42,21 @@ public sealed class ClipboardPolicyTests
         Assert.True(ClipboardPolicy.Raises(ClipAction.Offer));
         Assert.True(ClipboardPolicy.Notifies(ClipAction.List));
         Assert.False(ClipboardPolicy.Notifies(ClipAction.Open));
+    }
+
+    [Fact]
+    public void Pictures_beside_one_are_its_folder_by_name()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mdclip-pictures-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            foreach (var name in new[] { "c.png", "A.jpg", "b.svg", "notes.md" }) File.WriteAllText(Path.Combine(dir, name), "x");
+            var (items, start) = Pictures.Beside(Path.Combine(dir, "b.svg"));
+            Assert.Equal(["A.jpg", "b.svg", "c.png"], items.Select(Path.GetFileName));
+            Assert.Equal(1, start);
+        }
+        finally { Directory.Delete(dir, recursive: true); }
     }
 
     [Fact]
