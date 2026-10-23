@@ -5,7 +5,9 @@ A Markdown viewer for Windows that opens the file whose path you just copied.
 Windows 上的 Markdown 閱讀器：雙擊 `.md` 就打開，左邊檔案樹、右邊大綱，彩色排版，
 複製一個路徑它就自動跳出那份文件。
 
-![icon](MdClip/app.ico)
+![MdClip：檔案樹、彩色排版、本篇大綱](docs/screenshot.png)
+
+![暗色主題：程式碼上色與 Mermaid 流程圖](docs/screenshot-dark.png)
 
 ## 安裝
 
