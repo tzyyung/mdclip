@@ -95,19 +95,17 @@
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="help" id="help" role="dialog" aria-label="快捷鍵與功能" hidden>
   <div class="help-box">
-    <div class="help-head"><h2>快捷鍵與功能</h2><button class="icon sm" id="help-close" title="關閉 (Esc)">✕</button></div>
+    <div class="help-head"><h2>快捷鍵與功能</h2><button class="icon sm" title="關閉 (Esc)">✕</button></div>
     <div class="help-body" id="help-body"></div>
   </div>
 </div>
 <div class="help" id="clipset" role="dialog" aria-label="剪貼簿設定" hidden>
   <div class="help-box clipset-box">
-    <div class="help-head"><h2>剪貼簿設定</h2><button class="icon sm" id="clipset-close" title="關閉 (Esc)">✕</button></div>
+    <div class="help-head"><h2>剪貼簿設定</h2><button class="icon sm" title="關閉 (Esc)">✕</button></div>
     <form class="clipset-body" id="clipset-form">
       <fieldset>
         <legend>複製到 .md 或圖片的路徑時</legend>
-        <label><input type="radio" name="mode" value="auto">自動開啟</label>
-        <label><input type="radio" name="mode" value="hint">只提示</label>
-        <label><input type="radio" name="mode" value="off">不理會</label>
+        <span id="clip-modes"></span>
       </fieldset>
       <fieldset>
         <legend>路徑夾在其他文字裡時</legend>
@@ -116,9 +114,8 @@
       </fieldset>
       <fieldset>
         <legend>一次複製到多個檔案時</legend>
-        <label><input type="radio" name="multi" value="list">列出來讓我選</label>
-        <label><input type="radio" name="multi" value="first">開第一個，並提示還有其他檔案</label>
-        <label>最多列出<input type="number" name="max" min="2" max="50" step="1">個</label>
+        <span id="clip-multi"></span>
+        <label>最多列出<input type="number" name="max" step="1">個</label>
         <p class="note">「開第一個」找到第一個就停，按「列出」時才找其他的。</p>
       </fieldset>
     </form>

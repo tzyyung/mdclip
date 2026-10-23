@@ -68,13 +68,31 @@ const state = {
   lastDark: cfg.lastDark,
 };
 
-const isImage = (rel) => /\.(png|jpe?g|gif|svg|webp|bmp)$/i.test(rel);
+// The image extensions come from the host (Paths.ImageExtensions), like every rule it owns.
+const imagePattern = new RegExp(`\\.(${cfg.imageExtensions.join("|")})$`, "i");
+const isImage = (rel) => imagePattern.test(rel);
 const kindOf = (rel) => (isImage(rel) ? "image" : "doc");
 // Images open as a zoomable viewer page; the bare URL stays the raw image for <img src>.
 const urlOf = (rel) => "/" + rel.split("/").map(encodeURIComponent).join("/") + (isImage(rel) ? "?view" : "");
 const relOf = (pathname) => decodeURIComponent(pathname.replace(/^\//, ""));
 const baseName = (rel) => rel.slice(rel.lastIndexOf("/") + 1);
 const fileIcon = (rel) => (isImage(rel) ? "image" : "file");
+
+// Full Windows paths (the reading history, the clipboard, copied links) against the open folder.
+const rootDir = () => cfg.root.replace(/\\$/, "");
+const fullPath = (rel) => rootDir() + "\\" + rel.replaceAll("/", "\\");
+// The path relative to the open folder for a file inside it, else null.
+function relUnderRoot(path) {
+  const root = rootDir();
+  return path.toLowerCase().startsWith(root.toLowerCase() + "\\") ? path.slice(root.length + 1).replaceAll("\\", "/") : null;
+}
+const nameOf = (path) => baseName(path.replaceAll("\\", "/"));
+// Where a file lives, for lists: relative to the open folder when inside it, else the full folder path.
+function dirLabel(path) {
+  const rel = relUnderRoot(path);
+  if (rel === null) return path.slice(0, path.lastIndexOf("\\"));
+  return rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : cfg.name;
+}
 
 // ---------- project / root ----------
 
@@ -90,7 +108,7 @@ function loadRootState() {
 
 const themeById = Object.fromEntries(cfg.themes.map((t) => [t.id, t]));
 const resolveTheme = (id) =>
-  themeById[id === "auto" ? (cfg.systemDark ? "colorful-dark" : "colorful-light") : id] ?? cfg.themes[0];
+  themeById[id === "auto" ? (cfg.systemDark ? cfg.autoDark : cfg.autoLight) : id] ?? cfg.themes[0];
 
 function setThemeAttr(id) {
   document.documentElement.dataset.theme = id;
@@ -118,7 +136,7 @@ const layout = Object.assign(
   store.get("layout", {}), { clip: cfg.clip ?? "auto" }); // the host owns the clipboard mode (the tray menu sets it too)
 // Also the host's: how many other characters may come with a path for it to open by itself, and what
 // to do when one copy names several files ("list" them, or open the "first").
-const clipOpts = { chars: cfg.clipChars ?? 30, multi: cfg.clipMulti ?? "list", max: cfg.clipMax ?? 5 };
+const clipOpts = { chars: cfg.clipChars, multi: cfg.clipMulti, max: cfg.clipMax };
 
 function applyLayout() {
   body.classList.toggle("no-side", !layout.side);
@@ -295,21 +313,19 @@ $("tree").addEventListener("click", (e) => {
     if (state.open.has(key)) state.open.delete(key); else state.open.add(key);
     saveOpen();
     renderTree();
-  } else if (e.ctrlKey) {
-    openInNewTab(row.dataset.rel);
   } else {
-    navigate(row.dataset.rel);
+    openDoc(row.dataset.rel, { newTab: e.ctrlKey });
   }
 });
 $("tree").addEventListener("auxclick", (e) => {
   const row = e.target.closest(".row.file");
-  if (row && e.button === 1) { e.preventDefault(); openInNewTab(row.dataset.rel); }
+  if (row && e.button === 1) { e.preventDefault(); openDoc(row.dataset.rel, { newTab: true }); }
 });
 
 $("filter").addEventListener("input", renderTree);
 $("filter").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { $("filter").value = ""; renderTree(); focusDoc(); e.stopPropagation(); }
-  if (e.key === "Enter") { const first = $("tree").querySelector(".row.file"); if (first) navigate(first.dataset.rel); }
+  if (e.key === "Enter") openDoc($("tree").querySelector(".row.file")?.dataset.rel);
 });
 
 // ---------- navigation & history ----------
@@ -365,6 +381,24 @@ function navigate(rel, hash = "", scroll = 0, find = null) {
   state.hist.push({ rel, scroll });
   state.at = state.hist.length - 1;
   load(rel, { hash, scroll, find });
+}
+
+// Every "open this document": a new tab on request; within the open document, only the heading or find
+// changes; otherwise a page turn.
+function openDoc(rel, { hash = "", scroll = 0, find = null, newTab = false } = {}) {
+  if (!rel) return;
+  if (newTab) { openInNewTab(rel, hash, find); return; }
+  if (rel !== state.current) { navigate(rel, hash, scroll, find); return; }
+  if (hash) scrollToHash(hash, true);
+  if (find) openFind(find.q, find.nth);
+}
+
+// A file outside the open folder (or a path to look up): the host finds it, switches folders if needed and
+// answers with "resolved", which opens it at `scroll`.
+function requestOpen(text, scroll = 0) {
+  pal.pendingId = String(Date.now());
+  pal.pendingScroll = scroll;
+  post({ type: "resolve", text, id: pal.pendingId });
 }
 
 function go(delta) {
@@ -443,36 +477,44 @@ frame.addEventListener("load", () => {
   revealInTree(rel);
 });
 
+// Keys, mouse back/forward buttons, file drops, toast dismissal and (unless an image page, which zooms
+// the picture itself) Ctrl+wheel text zoom: the same for the app page and every document.
+function listenTo(target, { zoomWheel = true } = {}) {
+  target.addEventListener("keydown", onKey);
+  target.addEventListener("mouseup", onMouseNav);
+  target.addEventListener("dragenter", onDragEnter);
+  target.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  for (const type of ["pointerdown", "wheel", "keydown"]) target.addEventListener(type, noteInteraction, { capture: true, passive: true });
+  if (zoomWheel) target.addEventListener("wheel", onCtrlWheel, { passive: false });
+}
+
+// Where a link in a document points: { url, rel } with rel set for our own pages, or null for script links.
+function linkTarget(a, doc) {
+  const url = new URL(a.getAttribute("href"), doc.baseURI);
+  if (url.protocol === "javascript:") return null; // never run, never hand to the shell
+  return { url, rel: url.origin === location.origin ? relOf(url.pathname) : null };
+}
+
 function hookDoc(doc) {
-  doc.addEventListener("keydown", onKey);
-  doc.addEventListener("dragenter", onDragEnter);
-  doc.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
-  doc.addEventListener("mouseup", onMouseNav);
+  listenTo(doc, { zoomWheel: !doc.body.classList.contains("image-page") });
   doc.addEventListener("mousedown", closeMenus);
-  for (const type of ["pointerdown", "wheel", "keydown"]) doc.addEventListener(type, noteInteraction, { capture: true, passive: true });
-  // Image pages zoom the picture on every wheel; documents zoom text on Ctrl+wheel.
-  if (!doc.body.classList.contains("image-page")) doc.addEventListener("wheel", onCtrlWheel, { passive: false });
   doc.addEventListener("click", (e) => {
     const pic = e.target.closest("main img");
     if (pic && !e.target.closest("a")) { e.preventDefault(); openLightbox(doc, pic); return; }
     const a = e.target.closest("a[href]");
     if (!a || e.defaultPrevented) return;
-    const url = new URL(a.getAttribute("href"), doc.baseURI);
     e.preventDefault();
-    if (url.protocol === "javascript:") return; // never run, never hand to the shell
-    if (url.origin !== location.origin) { post({ type: "external", url: url.href }); return; }
-    const rel = relOf(url.pathname);
-    if (e.ctrlKey) { openInNewTab(rel, url.hash); return; }
-    if (rel === state.current) { if (url.hash) scrollToHash(url.hash, true); return; }
-    navigate(rel, url.hash);
+    const link = linkTarget(a, doc);
+    if (!link) return;
+    if (link.rel === null) post({ type: "external", url: link.url.href });
+    else openDoc(link.rel, { hash: link.url.hash, newTab: e.ctrlKey });
   });
   doc.addEventListener("auxclick", (e) => {
     const a = e.target.closest("a[href]");
-    if (!a || e.button !== 1) return;
-    const url = new URL(a.getAttribute("href"), doc.baseURI);
-    if (url.origin !== location.origin) return;
+    const link = a && e.button === 1 && linkTarget(a, doc);
+    if (!link?.rel) return;
     e.preventDefault();
-    openInNewTab(relOf(url.pathname), url.hash);
+    openDoc(link.rel, { hash: link.url.hash, newTab: true });
   });
   let ticking = false, report = 0;
   doc.defaultView.addEventListener("scroll", () => {
@@ -666,7 +708,7 @@ function updatePalette() {
       if (!items.length) items.push({ kind: "path", text: q, icon: "link", title: "當作路徑開啟", sub: esc(q) });
     } else {
       for (const h of state.history)
-        if (h.exists) items.push({ kind: "hist", path: h.path, scroll: h.scroll, icon: "clock", title: esc(baseName(h.path.replaceAll("\\", "/"))), sub: esc(histDir(h.path) + " · " + ago(h.when)) });
+        if (h.exists) items.push({ kind: "hist", path: h.path, scroll: h.scroll, icon: "clock", title: esc(nameOf(h.path)), sub: esc(dirLabel(h.path) + " · " + ago(h.when)) });
     }
   }
   pal.items = items;
@@ -699,40 +741,28 @@ function openPick(files, more = false) {
 function updatePick() {
   const q = $("palette-input").value.trim().toLowerCase();
   pal.note = pal.pickMore ? `剪貼簿裡的檔案超過 ${pal.pick.length} 個，只列出前 ${pal.pick.length} 個` : `剪貼簿裡有 ${pal.pick.length} 個檔案`;
-  pal.items = pal.pick.filter((f) => !q || (f.rel ?? f.path).toLowerCase().includes(q)).map((f) => {
-    const p = (f.rel ?? f.path).replaceAll("\\", "/");
-    const dir = f.rel ? p.slice(0, Math.max(0, p.lastIndexOf("/"))) || cfg.name : histDir(f.path);
-    return { kind: "pick", rel: f.rel, path: f.path, icon: fileIcon(p), title: esc(baseName(p)), sub: esc(dir) };
-  });
+  pal.items = pal.pick.filter((f) => !q || (f.rel ?? f.path).toLowerCase().includes(q))
+    .map((f) => ({ kind: "pick", rel: f.rel, path: f.path, icon: fileIcon(f.path), title: esc(nameOf(f.path)), sub: esc(dirLabel(f.path)) }));
   pal.sel = 0;
   renderPalette();
 }
 
 // A file from the clipboard: under the root it opens directly, elsewhere the host switches folders first.
 function openClipFile(f, newTab = false, hash = "") {
-  if (f.rel) { if (newTab) openInNewTab(f.rel, hash); else navigate(f.rel, hash); }
-  else post({ type: "resolve", text: f.path + hash, id: (pal.pendingId = "clip" + Date.now()) });
+  if (f.rel) openDoc(f.rel, { hash, newTab });
+  else requestOpen(f.path + hash);
 }
 
 // newTab: Ctrl+Enter or Ctrl+click opens the file in a new tab.
 function choose(it, newTab = false) {
   if (!it) return;
-  if (it.kind === "pick") { closePalette(); openClipFile(it, newTab); return; }
-  if (it.kind === "file") { closePalette(); if (newTab) openInNewTab(it.rel); else navigate(it.rel); }
-  else if (it.kind === "heading") { closePalette(); scrollToHash(it.id, true); }
-  else if (it.kind === "hist") { closePalette(); openHistory(it.path, it.scroll); }
-  else if (it.kind === "hit") {
-    closePalette();
-    if (newTab) openInNewTab(it.rel, "", { q: it.q, nth: it.nth });
-    else if (it.rel === state.current) openFind(it.q, it.nth);
-    else navigate(it.rel, "", 0, { q: it.q, nth: it.nth });
-  }
-  else if (it.kind === "path") {
-    pal.pendingId = String(Date.now());
-    pal.pendingScroll = 0;
-    renderPalette(`<li class="hint">開啟中…</li>`);
-    post({ type: "resolve", text: it.text, id: pal.pendingId });
-  }
+  if (it.kind === "path") { renderPalette(`<li class="hint">開啟中…</li>`); requestOpen(it.text); return; } // the palette shows the answer
+  closePalette();
+  if (it.kind === "pick") openClipFile(it, newTab);
+  else if (it.kind === "file") openDoc(it.rel, { newTab });
+  else if (it.kind === "heading") scrollToHash(it.id, true);
+  else if (it.kind === "hist") openHistory(it.path, it.scroll);
+  else if (it.kind === "hit") openDoc(it.rel, { find: { q: it.q, nth: it.nth }, newTab });
 }
 
 function onResolved(m) {
@@ -743,18 +773,28 @@ function onResolved(m) {
     return;
   }
   if (!$("palette").hidden) closePalette();
-  if (m.rel === state.current && m.hash) scrollToHash(m.hash, true);
-  else if (m.rel) navigate(m.rel, m.hash ?? "", pal.pendingScroll);
+  openDoc(m.rel, { hash: m.hash ?? "", scroll: pal.pendingScroll });
 }
 
 // ---------- tabs ----------
 
-// Keeps the active tab's back/forward list in its slot before another tab becomes active.
+// Writes the active tab's back/forward list into its slot.
+function syncTab() {
+  const t = state.tabs[state.tab];
+  if (t) { t.hist = state.hist; t.at = state.at; }
+}
+
+// Before another tab becomes active: the reading position too.
 function stashTab() {
   saveScroll();
-  const t = state.tabs[state.tab];
-  t.hist = state.hist;
-  t.at = state.at;
+  syncTab();
+}
+
+// A new, empty tab right after the active one, made active.
+function insertTab() {
+  stashTab();
+  state.tabs.splice(state.tab + 1, 0, { hist: [], at: -1 });
+  activateTab(state.tab + 1);
 }
 
 function activateTab(i) {
@@ -781,18 +821,14 @@ function switchTab(i) {
 
 function openInNewTab(rel, hash = "", find = null) {
   if (!rel) return;
-  stashTab();
-  state.tabs.splice(state.tab + 1, 0, { hist: [], at: -1 });
-  activateTab(state.tab + 1);
+  insertTab();
   navigate(rel, hash, 0, find);
   renderTabs();
 }
 
 // Ctrl+T: an empty tab with quick open ready.
 function newTab() {
-  stashTab();
-  state.tabs.splice(state.tab + 1, 0, { hist: [], at: -1 });
-  activateTab(state.tab + 1);
+  insertTab();
   showEmpty();
   openPalette();
 }
@@ -829,7 +865,7 @@ function renderTabs() {
   strip.innerHTML = state.tabs.map((t, i) => {
     const rel = tabRel(t, i);
     return `<div class="tab${i === state.tab ? " on" : ""}" data-i="${i}" title="${esc(rel ?? "新分頁")}" role="tab">` +
-      `${icon(rel && isImage(rel) ? "image" : "file", "ico")}<span>${esc(rel ? baseName(rel) : "新分頁")}</span>` +
+      `${icon(fileIcon(rel ?? ""), "ico")}<span>${esc(rel ? baseName(rel) : "新分頁")}</span>` +
       `<button class="x" data-close="${i}" title="關閉 (Ctrl+W)">${icon("close")}</button></div>`;
   }).join("") + `<button class="tab-new" title="新分頁 (Ctrl+T)">${icon("plus")}</button>`;
   strip.querySelector(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -837,7 +873,7 @@ function renderTabs() {
 
 // Each folder remembers its open tabs (the page each one shows).
 function saveTabs() {
-  if (state.tabs[state.tab]) { state.tabs[state.tab].hist = state.hist; state.tabs[state.tab].at = state.at; }
+  syncTab();
   const list = state.tabs.map((t, i) => tabRel(t, i) ?? "");
   store.set("tabs:" + cfg.root, { list, active: state.tab });
 }
@@ -863,17 +899,17 @@ $("tabs").addEventListener("auxclick", (e) => {
 
 // ---------- math ----------
 
-let katexReady = null;
-
-// KaTeX loads only when a document has math ($...$ or $$...$$, which Markdig marks as .math).
-function loadKatex() {
-  return (katexReady ??= new Promise((resolve, reject) => {
+// Big libraries load only when a document needs them, once: KaTeX for math, Mermaid (2.5 MB) for diagrams.
+const scripts = new Map();
+function loadScript(src, global, name) {
+  if (!scripts.has(src)) scripts.set(src, new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "katex/katex.min.js";
-    script.onload = () => resolve(window.katex);
-    script.onerror = () => { katexReady = null; reject(new Error("無法載入 KaTeX")); };
+    script.src = src;
+    script.onload = () => resolve(window[global]);
+    script.onerror = () => { scripts.delete(src); reject(new Error("無法載入 " + name)); };
     document.head.append(script);
   }));
+  return scripts.get(src);
 }
 
 async function renderMath(doc) {
@@ -887,12 +923,13 @@ async function renderMath(doc) {
     doc.head.append(link);
   }
   let katex;
-  try { katex = await loadKatex(); } catch { return false; }
+  try { katex = await loadScript("katex/katex.min.js", "katex", "KaTeX"); } catch { return false; }
   for (const el of blocks) {
     const tex = el.textContent.trim().replace(/^\\[([]/, "").replace(/\\[)\]]$/, "").trim();
     katex.render(tex, el, { displayMode: el.tagName === "DIV", throwOnError: false });
     el.classList.add("typeset");
   }
+  finder.index = null; // the text changed
   return true;
 }
 
@@ -934,23 +971,33 @@ const HELP = [
   ]],
 ];
 
-function openHelp() {
+// ---------- panels: shortcuts, clipboard settings ----------
+
+// One panel at a time over the page; its ✕, Esc or a click beside it closes it.
+function openDialog(id) {
   closeMenus();
+  $(id).hidden = false;
+  $(id).querySelector(".help-head button").focus();
+}
+
+function closeDialog() {
+  const open = document.querySelector(".help:not([hidden])");
+  if (!open) return false;
+  open.hidden = true;
+  focusDoc();
+  return true;
+}
+
+for (const panel of document.querySelectorAll(".help")) {
+  panel.querySelector(".help-head button").onclick = closeDialog;
+  panel.addEventListener("mousedown", (e) => { if (e.target === panel) closeDialog(); });
+}
+
+function openHelp() {
   $("help-body").innerHTML = HELP.map(([group, rows]) =>
     `<section><h3>${group}</h3><dl>${rows.map(([k, v]) => `<dt>${k.split(" · ").map((x) => `<kbd>${esc(x)}</kbd>`).join(" ")}</dt><dd>${esc(v)}</dd>`).join("")}</dl></section>`).join("");
-  $("help").hidden = false;
-  $("help-close").focus();
+  openDialog("help");
 }
-
-function closeHelp() {
-  $("help").hidden = true;
-  focusDoc();
-}
-
-$("help-close").onclick = closeHelp;
-$("help").addEventListener("mousedown", (e) => { if (e.target === $("help")) closeHelp(); });
-
-// ---------- clipboard settings ----------
 
 function setClipMode(mode) {
   layout.clip = mode;
@@ -958,35 +1005,33 @@ function setClipMode(mode) {
   post({ type: "clipMode", mode });
 }
 
-function openClipSettings() {
-  closeMenus();
+// The choices and ranges come from the host (Settings), which also checks what is typed and answers with
+// what it kept ("clipOptions").
+const radios = (name, choices) => choices.map((c) => `<label><input type="radio" name="${name}" value="${c.id}">${esc(c.label)}</label>`).join("");
+$("clip-modes").outerHTML = radios("mode", cfg.clipModes);
+$("clip-multi").outerHTML = radios("multi", cfg.clipMultiModes);
+$("clipset-form").elements.max.min = cfg.clipMaxRange[0];
+$("clipset-form").elements.max.max = cfg.clipMaxRange[1];
+
+function showClipOptions() {
   const f = $("clipset-form").elements;
   f.mode.value = layout.clip;
   f.chars.value = clipOpts.chars;
   f.multi.value = clipOpts.multi;
   f.max.value = clipOpts.max;
-  $("clipset").hidden = false;
-  $("clipset-close").focus();
 }
 
-function closeClipSettings() {
-  $("clipset").hidden = true;
-  focusDoc();
+function openClipSettings() {
+  showClipOptions();
+  openDialog("clipset");
 }
 
-$("clipset-close").onclick = closeClipSettings;
-$("clipset").addEventListener("mousedown", (e) => { if (e.target === $("clipset")) closeClipSettings(); });
 $("clipset-form").addEventListener("submit", (e) => e.preventDefault());
 $("clipset-form").addEventListener("change", (e) => {
   const f = $("clipset-form").elements;
   if (e.target.name === "mode") { setClipMode(f.mode.value); return; }
-  const chars = Math.round(Number(f.chars.value)), max = Math.round(Number(f.max.value));
-  if (Number.isFinite(chars) && chars >= 0) clipOpts.chars = chars;
-  if (Number.isFinite(max)) clipOpts.max = Math.min(50, Math.max(2, max));
-  f.chars.value = clipOpts.chars;
-  f.max.value = clipOpts.max;
-  clipOpts.multi = f.multi.value;
-  post({ type: "clipOptions", chars: clipOpts.chars, multi: clipOpts.multi, max: clipOpts.max });
+  Object.assign(clipOpts, { chars: Number(f.chars.value), multi: f.multi.value, max: Number(f.max.value) });
+  post({ type: "clipOptions", ...clipOpts });
 });
 
 // ---------- full-text search ----------
@@ -1021,7 +1066,20 @@ function onSearchResults(m) {
 // ---------- find in page ----------
 
 // Matches are painted with the CSS Custom Highlight API, so the document's DOM is never changed.
-const finder = { ranges: [], i: -1, timer: 0 };
+// index: the document's text and where each text node starts in it, built once per document (and again
+// after diagrams or math change the text), not on every keystroke.
+const finder = { ranges: [], i: -1, timer: 0, index: null };
+
+function textIndex(doc, main) {
+  if (finder.index?.doc === doc) return finder.index;
+  const nodes = [];
+  let text = "";
+  const walker = doc.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement.closest("style, script, svg, .katex-mathml") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  for (let n; (n = walker.nextNode()); ) { nodes.push({ n, start: text.length }); text += n.data; }
+  return (finder.index = { doc, nodes, hay: text.toLowerCase() });
+}
 
 function openFind(q, nth) {
   $("findbar").hidden = false;
@@ -1058,13 +1116,7 @@ function runFind(nth = 0) {
   const doc = frame.contentDocument, win = frame.contentWindow;
   const main = doc?.querySelector("main");
   if (q && main && !doc.body.classList.contains("image-page") && win.Highlight) {
-    const nodes = [];
-    let text = "";
-    const walker = doc.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
-      acceptNode: (n) => (n.parentElement.closest("style, script, svg, .katex-mathml") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
-    });
-    for (let n; (n = walker.nextNode()); ) { nodes.push({ n, start: text.length }); text += n.data; }
-    const hay = text.toLowerCase();
+    const { nodes, hay } = textIndex(doc, main);
     // The node holding character `off`; an end offset may sit at the very end of the previous node.
     const at = (off, isEnd) => {
       let lo = 0, hi = nodes.length - 1;
@@ -1131,19 +1183,7 @@ function highlightCode(doc) {
   }
 }
 
-let mermaidReady = null;
 let diagramSeq = 0;
-
-// Mermaid (2.5 MB) loads only when a document has a diagram.
-function loadMermaid() {
-  return (mermaidReady ??= new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "mermaid.min.js";
-    script.onload = () => resolve(window.mermaid);
-    script.onerror = () => { mermaidReady = null; reject(new Error("無法載入 Mermaid")); };
-    document.head.append(script);
-  }));
-}
 
 // Diagram colours come from the document's own theme variables.
 // Copy buttons on code blocks and a link button beside each heading.
@@ -1175,15 +1215,13 @@ function addDocButtons(doc) {
     b.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const link = currentPath() + "#" + h.id;
+      const link = fullPath(state.current) + "#" + h.id;
       copyText(link);
       toast("已複製這一節的連結：" + link);
     });
     h.prepend(b);
   }
 }
-
-const currentPath = () => cfg.root.replace(/\\$/, "") + "\\" + state.current.replaceAll("/", "\\");
 
 // Through the host, which also keeps our own copies from being picked up as clipboard paths.
 const copyText = (text) => post({ type: "copy", text });
@@ -1199,8 +1237,6 @@ function onDragEnter(e) {
   $("drop").hidden = false;
 }
 
-document.addEventListener("dragenter", onDragEnter);
-document.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
 $("drop").addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
 $("drop").addEventListener("dragleave", (e) => { if (!$("drop").contains(e.relatedTarget)) $("drop").hidden = true; });
 $("drop").addEventListener("drop", (e) => {
@@ -1263,7 +1299,7 @@ async function renderDiagrams(doc) {
   const figs = [...doc.querySelectorAll(".mermaid.figure")];
   if (!figs.length) return false;
   let mermaid;
-  try { mermaid = await loadMermaid(); } catch (err) { figs.forEach((f) => showDiagramError(f, err)); return false; }
+  try { mermaid = await loadScript("mermaid.min.js", "mermaid", "Mermaid"); } catch (err) { figs.forEach((f) => showDiagramError(f, err)); return false; }
   mermaid.initialize(mermaidConfig(doc));
   for (const fig of figs) {
     const id = "mmd" + ++diagramSeq;
@@ -1277,6 +1313,7 @@ async function renderDiagrams(doc) {
       document.getElementById("d" + id)?.remove(); // mermaid leaves its scratch element behind on errors
     }
   }
+  finder.index = null; // the text changed
   return true;
 }
 
@@ -1353,15 +1390,6 @@ $("theme-menu").addEventListener("click", (e) => {
 
 // ---------- reading history ----------
 
-// Path relative to the open folder when it lives there, otherwise the full path, without the file name.
-function histDir(path) {
-  const dir = path.slice(0, path.lastIndexOf("\\"));
-  const root = cfg.root.replace(/\\$/, "");
-  if (dir.toLowerCase() === root.toLowerCase()) return cfg.name;
-  if (dir.toLowerCase().startsWith(root.toLowerCase() + "\\")) return dir.slice(root.length + 1).replaceAll("\\", "/");
-  return dir;
-}
-
 function ago(when) {
   const min = Math.floor((Date.now() - when) / 60000);
   if (min < 1) return "剛剛";
@@ -1372,24 +1400,19 @@ function ago(when) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-// Files in the open folder navigate directly; anything else goes through the host, which switches folders.
-// Opens at the last reading position.
+// Opens at the last reading position; files outside the open folder go through the host.
 function openHistory(path, scroll = 0) {
-  const root = cfg.root.replace(/\\$/, "");
-  if (path.toLowerCase().startsWith(root.toLowerCase() + "\\")) { navigate(path.slice(root.length + 1).replaceAll("\\", "/"), "", scroll); return; }
-  pal.pendingId = String(Date.now());
-  pal.pendingScroll = scroll;
-  post({ type: "resolve", text: path, id: pal.pendingId });
+  const rel = relUnderRoot(path);
+  if (rel) navigate(rel, "", scroll); else requestOpen(path, scroll);
 }
 
 function openHistoryMenu() {
   const menu = $("history-menu");
-  const currentPath = state.current && (cfg.root.replace(/\\$/, "") + "\\" + state.current.replaceAll("/", "\\")).toLowerCase();
+  const current = state.current && fullPath(state.current).toLowerCase();
   const rows = state.history.map((h, i) => {
-    const name = baseName(h.path.replaceAll("\\", "/"));
-    const cur = h.path.toLowerCase() === currentPath;
+    const cur = h.path.toLowerCase() === current;
     return `<button data-hist="${i}" class="hist${cur ? " cur" : ""}"${h.exists ? "" : " disabled"} title="${esc(h.path)}">` +
-      `${icon(isImage(h.path) ? "image" : "file")}<span class="hn"><span class="t">${esc(name)}</span><span class="s">${esc(h.exists ? histDir(h.path) : "檔案已不存在")}</span></span>` +
+      `${icon(fileIcon(h.path))}<span class="hn"><span class="t">${esc(nameOf(h.path))}</span><span class="s">${esc(h.exists ? dirLabel(h.path) : "檔案已不存在")}</span></span>` +
       `<span class="tail">${ago(h.when)}</span></button>`;
   });
   menu.innerHTML = `<div class="label">最近讀過的檔案（最多 30 個）</div>` +
@@ -1419,9 +1442,9 @@ function openMoreMenu() {
     "<hr>" +
     item("reload", "reload", "重新整理", "F5") +
     item("help", "keyboard", "快捷鍵與功能", "?") +
-    `<div class="label">剪貼簿有 .md 或圖片路徑時</div>` +
-    [["auto", "自動開啟"], ["hint", "只提示"], ["off", "不理會"]]
-      .map(([mode, label]) => `<button data-clip="${mode}">${icon("copy")}<span>${label}</span>${layout.clip === mode ? `<span class="tail">${icon("check")}</span>` : ""}</button>`)
+    `<div class="label">${esc(cfg.clipModesTitle)}</div>` +
+    cfg.clipModes
+      .map((m) => `<button data-clip="${m.id}">${icon("copy")}<span>${esc(m.label)}</span>${layout.clip === m.id ? `<span class="tail">${icon("check")}</span>` : ""}</button>`)
       .join("") +
     item("clipset", "keyboard", "剪貼簿設定…");
   showMenu($("more-menu"), $("more"));
@@ -1442,8 +1465,8 @@ $("more-menu").addEventListener("click", (e) => {
   else if (act === "help") openHelp();
   else if (act === "clipset") openClipSettings();
   else if (act === "copy") {
-    copyText(currentPath());
-    toast("已複製：" + currentPath());
+    copyText(fullPath(state.current));
+    toast("已複製：" + fullPath(state.current));
   }
 });
 
@@ -1550,7 +1573,6 @@ function noteInteraction(e) {
   toastUntilInteraction = false;
   armToast(2000);
 }
-for (const type of ["pointerdown", "wheel", "keydown"]) document.addEventListener(type, noteInteraction, { capture: true, passive: true });
 
 function armToast(ms) {
   clearTimeout(toastTimer);
@@ -1649,8 +1671,7 @@ function onKey(e) {
   else if ((e.altKey && k === "arrowleft") || k === "browserback") go(-1);
   else if ((e.altKey && k === "arrowright") || k === "browserforward") go(1);
   else if (k === "escape" && closeMenus()) { /* closed a menu */ }
-  else if (k === "escape" && !$("help").hidden) closeHelp();
-  else if (k === "escape" && !$("clipset").hidden) closeClipSettings();
+  else if (k === "escape" && closeDialog()) { /* closed a panel */ }
   else if (k === "escape" && !$("findbar").hidden) closeFind();
   else if (k === "escape" && layout.zen) toggleZen();
   else return;
@@ -1663,8 +1684,6 @@ function onMouseNav(e) {
   if (e.button === 4) { e.preventDefault(); go(1); }
 }
 
-document.addEventListener("keydown", onKey);
-document.addEventListener("mouseup", onMouseNav);
 
 // ---------- messages from the host ----------
 
@@ -1687,13 +1706,14 @@ window.chrome?.webview?.addEventListener("message", (e) => {
       // Show the folder's active tab unless an "open" for a file there follows right away.
       setTimeout(() => { if (!state.current && !state.pending) openActiveTab(); }, 60);
       break;
-    case "open": navigate(m.rel); break;
+    case "open": openDoc(m.rel); break;
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
     case "clipPick": openPick(m.files, m.more); break;
     case "history": state.history = m.items; break;
     case "searchResults": onSearchResults(m); break;
     case "clipMode": layout.clip = m.mode; store.set("layout", layout); break;
+    case "clipOptions": Object.assign(clipOpts, { chars: m.chars, multi: m.multi, max: m.max }); showClipOptions(); break;
     case "openHistory": openHistory(m.path, m.scroll); break;
     case "exported": onExported(m); break;
     case "system":
@@ -1738,7 +1758,7 @@ $("empty-folder").onclick = () => post({ type: "pickFolder" });
 $("zoom-out").onclick = () => zoomStep(-1);
 $("zoom-in").onclick = () => zoomStep(1);
 $("zoom-reset").onclick = () => zoomStep(0);
-document.addEventListener("wheel", onCtrlWheel, { passive: false });
+listenTo(document);
 
 setupPeek("hot-left", $("side"), "peek-left");
 setupPeek("hot-right", $("toc"), "peek-right");

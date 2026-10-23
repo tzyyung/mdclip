@@ -165,7 +165,7 @@ await check("clipboard: several files are listed to pick from", async () => {
 
 await check("clipboard settings change what opens by itself", async () => {
   const before = await js("clipOpts.chars");
-  const setChars = (n) => js(`openClipSettings(); $('clipset-form').elements.chars.value = ${n}; $('clipset-form').elements.chars.dispatchEvent(new Event('change', { bubbles: true })); closeClipSettings()`);
+  const setChars = (n) => js(`openClipSettings(); $('clipset-form').elements.chars.value = ${n}; $('clipset-form').elements.chars.dispatchEvent(new Event('change', { bubbles: true })); closeDialog()`);
   await setChars(500);
   try {
     setClipboard(passage(path.join(fixtures, "other.md")));
@@ -182,7 +182,7 @@ const setClipOptions = (opts) => js(`(() => {
   const f = $('clipset-form').elements, o = ${JSON.stringify(opts)};
   for (const k in o) f[k].value = o[k];
   f.max.dispatchEvent(new Event('change', { bubbles: true }));
-  closeClipSettings();
+  closeDialog();
 })()`);
 
 await check("clipboard: list limit and open-the-first", async () => {
@@ -287,7 +287,7 @@ await check("theme switch redraws diagrams", async () => {
 await check("help panel", async () => {
   await js("openHelp()");
   const n = await js("$('help-body').querySelectorAll('section').length");
-  await js("closeHelp()");
+  await js("closeDialog()");
   expect(n === 5, "sections: " + n);
 });
 
