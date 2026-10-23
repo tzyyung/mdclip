@@ -262,19 +262,28 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
         }
     }
 
-    // Folders named in this same text come first, then the remembered ones.
+    // Folders named in this same text come first, then the remembered ones; then the folders above them,
+    // nearest first, since a link like "docs/shots/x.png" is written from its project's top folder while
+    // only a folder inside it (its docs) may be remembered.
     string? FindInRecentDirs(string tail)
     {
         var rel = tail.Replace('/', '\\');
         if (!rel.Contains('\\')) return (recentNames ??= IndexRecentDirs()).GetValueOrDefault(rel);
-        foreach (var dir in SeenDirs.Concat(recentDirs))
+        var dirs = SeenDirs.Concat(recentDirs).ToList();
+        var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (dirs.Count > 0)
         {
-            try
+            foreach (var dir in dirs)
             {
-                var path = Paths.FromRel(dir, rel);
-                if (SafePath.FileExists(path)) return path;
+                if (!tried.Add(dir)) continue;
+                try
+                {
+                    var path = Paths.FromRel(dir, rel);
+                    if (SafePath.FileExists(path)) return path;
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }
             }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }
+            dirs = dirs.Select(Path.GetDirectoryName).OfType<string>().ToList();
         }
         return null;
     }

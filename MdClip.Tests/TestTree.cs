@@ -23,6 +23,14 @@ public sealed class Tree : IDisposable
     // A file under the root (its folders made as needed).
     public void Write(string rel, string text = "# x") => WriteAt(In(rel), text);
 
+    // A file in the folder outside the root; returns its full path.
+    public string WriteOutside(string rel, string text = "# x")
+    {
+        var path = Path.Combine(Outside, rel);
+        WriteAt(path, text);
+        return path;
+    }
+
     static void WriteAt(string path, string text)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

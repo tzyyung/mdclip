@@ -129,6 +129,15 @@ public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
     public void File_name_outside_the_root_found_in_a_remembered_folder() =>
         Assert.Equal(Path.Combine(tree.Outside, "archive.md"), Found("archive.md", tree.In("docs"), tree.Outside));
 
+    // A link written relative to another project's root, e.g. "(docs/shots/x.png):" copied from a document
+    // there, while only a folder inside that project (its docs) is remembered.
+    [Fact]
+    public void Path_tail_relative_to_the_project_of_a_remembered_folder()
+    {
+        var shot = tree.WriteOutside(@"proj\docs\shots\流程圖-第1版.png");
+        Assert.Equal(shot, Found("(docs/shots/流程圖-第1版.png):", Path.Combine(tree.Outside, @"proj\docs")));
+    }
+
     [Fact]
     public void File_name_found_in_a_folder_named_in_the_same_text() =>
         Assert.Equal(Path.Combine(tree.Outside, "archive.md"), Found(tree.Outside + "\narchive.md"));
