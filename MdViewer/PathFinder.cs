@@ -42,22 +42,37 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
 
     // Accepts a pasted absolute path (file or folder, quoted or not, / or \), a file:// URL,
     // or a file path relative to the root.
-    public string? Resolve(string text)
+    public string? Resolve(string text) => Locate(text)?.Path;
+
+    // What a piece of text points at on disk. Each text is checked once per PathFinder: Find, FindAll and
+    // the folder collection try many of the same stretches.
+    readonly record struct Entry(string Path, bool IsDirectory);
+    readonly Dictionary<string, Entry?> located = [];
+
+    Entry? Locate(string text) => located.TryGetValue(text, out var known) ? known : located[text] = LocateOnDisk(text);
+
+    Entry? LocateOnDisk(string text)
     {
-        var s = text.Trim().Trim('"', '\'');
+        var s = Unquote(text);
         if (s.Length == 0) return null;
         if (s.StartsWith("file:", StringComparison.OrdinalIgnoreCase) && Uri.TryCreate(s, UriKind.Absolute, out var uri)) s = uri.LocalPath;
         s = s.Replace('/', '\\');
         try
         {
-            if (Path.IsPathFullyQualified(s))
-                return File.Exists(s) || Directory.Exists(s) ? Path.GetFullPath(s) : null;
-            if (Path.GetFullPath(Path.Combine(root, s.TrimStart('\\'))) is var full && File.Exists(full))
-                return full;
+            if (!Path.IsPathFullyQualified(s))
+                return Path.GetFullPath(Path.Combine(root, s.TrimStart('\\'))) is var full && SafePath.FileExists(full) ? new(full, false) : null;
+            if (!SafePath.Reachable(s)) return null;
+            s = Path.GetFullPath(s);
+            return File.Exists(s) ? new(s, false) : Directory.Exists(s) ? new(s, true) : null;
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }
         return null;
     }
+
+    // A markdown or image file the text names.
+    string? LocateFile(string text) => Locate(text) is { IsDirectory: false } e && IsListed(e.Path) ? e.Path : null;
+
+    static string Unquote(string text) => text.Trim().Trim('"', '\'', '`');
 
     // The file the text names (Path), or failing that the root-relative files whose name or path tail
     // it matches (Matches: one means open it, several means let the user pick).
@@ -74,7 +89,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
             .ToList();
         CollectDirs(candidates);
         foreach (var candidate in candidates)
-            if (Resolve(candidate) is { } path && IsListed(path) && File.Exists(path)) return (path, [], candidate);
+            if (LocateFile(candidate) is { } path) return (path, [], candidate);
 
         // Not a real path: treat it as a file name or path tail. A single match under the root wins;
         // otherwise look next to recently opened files (also outside the root), most recent first;
@@ -128,7 +143,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     {
         var stretches = Starts(line, end).Select(start => line[start..end]).ToList();
         foreach (var stretch in stretches)
-            if (Resolve(stretch) is { } path && IsListed(path) && File.Exists(path)) return new(path, stretch);
+            if (LocateFile(stretch) is { } path) return new(path, stretch);
         foreach (var stretch in stretches.Where(s => !s.Any(char.IsWhiteSpace)))
         {
             var tail = Tail(stretch);
@@ -196,7 +211,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
 
     static bool IsFullWidthMark(char c) => c is >= '\u3000' and <= '\u303F' or >= '\uFF00' and <= '\uFFEF';
 
-    static string Tail(string candidate) => candidate.Trim().Trim('"', '\'', '`').Replace('\\', '/').TrimStart('.', '/');
+    static string Tail(string candidate) => Unquote(candidate).Replace('\\', '/').TrimStart('.', '/');
 
     List<string> NameMatches(string tail) => knownFiles.Where(rel => rel.Equals(tail, StringComparison.OrdinalIgnoreCase)
         || rel.EndsWith("/" + tail, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -219,8 +234,8 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
         recentNames = null;
         foreach (var candidate in candidates)
         {
-            if (Resolve(candidate) is not { } path || !Path.IsPathFullyQualified(candidate.Trim().Trim('"', '\'', '`'))) continue;
-            var dir = Directory.Exists(path) ? path : IsListed(path) ? Path.GetDirectoryName(path)! : null;
+            if (!Path.IsPathFullyQualified(Unquote(candidate)) || Locate(candidate) is not { } entry) continue;
+            var dir = entry.IsDirectory ? entry.Path : IsListed(entry.Path) ? Path.GetDirectoryName(entry.Path)! : null;
             if (dir is not null && !SeenDirs.Contains(dir, StringComparer.OrdinalIgnoreCase)) SeenDirs.Add(dir);
         }
     }
@@ -235,7 +250,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
             try
             {
                 var path = Path.GetFullPath(Path.Combine(dir, rel));
-                if (File.Exists(path)) return path;
+                if (SafePath.FileExists(path)) return path;
             }
             catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }
         }
@@ -249,7 +264,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     Dictionary<string, string> IndexRecentDirs()
     {
         var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var dir in SeenDirs.Concat(recentDirs))
+        foreach (var dir in SeenDirs.Concat(recentDirs).Where(SafePath.Reachable))
         {
             try
             {

@@ -138,6 +138,9 @@ h1, h2, h3, h4 { position: relative; }
 .frontmatter dd { margin: 0; overflow-wrap: anywhere; }
 
 /* printing (Export PDF) */
+/* Very large documents: off-screen blocks are not laid out until they come near the view. */
+body.big main > * { content-visibility: auto; contain-intrinsic-size: auto 2.5em; }
+
 @media print {
   html, body { background: #fff; } /* the page margins are white paper; a tinted body would print as a band */
   main { max-width: none; padding: 0; }
@@ -145,6 +148,7 @@ h1, h2, h3, h4 { position: relative; }
   pre, table, blockquote, .mermaid.figure, img, .frontmatter { break-inside: avoid; }
   h1, h2, h3, h4 { break-after: avoid; }
   .copy-code, .h-anchor { display: none; }
+  body.big main > * { content-visibility: visible; } /* every page of the PDF is laid out */
   table { display: table; overflow: visible; }
 }
 

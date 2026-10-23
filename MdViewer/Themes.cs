@@ -168,10 +168,14 @@ sealed class ThemeSettings
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllLines(FilePath,
+            // Written beside it and then swapped in, so a crash or power cut mid-write leaves the old file
+            // whole instead of a cut-off one that loses the history and remembered folders.
+            var temp = FilePath + ".tmp";
+            File.WriteAllLines(temp,
                 [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", $"clip={Clip}", $"clipchars={ClipChars}", $"clipmulti={ClipMulti}", $"clipmax={ClipMax}", $"trayhint={(TrayHintShown ? 1 : 0)}", .. Dirs.Select(d => $"dir={d}"), .. History.Select(h => $"hist={h}")]);
+            File.Move(temp, FilePath, overwrite: true);
         }
-        catch (IOException) { }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     // Each folder is stored once (case-insensitive, trailing separator ignored); re-adding moves it to the front.

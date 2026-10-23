@@ -66,6 +66,12 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 - 按 ✕ 會縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」。
 - 系統匣選單：最近讀過的檔案、剪貼簿模式、開機時在背景啟動。
 
+**大檔案與特殊情況**
+- 幾 MB 的文件也能順暢開啟（8.7 MB 約 2.5 秒）：畫面外的段落等捲到附近才排版；重新開啟仍回到同一行。
+- 舊編輯器存的 Big5 文件會自動辨識，不會變亂碼（UTF-8、UTF-16 也可以）。
+- 記住的資料夾在網路磁碟上而那台電腦沒開時，不會卡住：最多等 0.5 秒就略過，也不會因此忘記那個資料夾。
+- `git checkout` 一次改上百個檔案時，檔案樹只重新整理一次；`.git`、`node_modules` 裡的變動不理會。
+
 **安全**：文件裡的 `<script>`、`onerror=` 之類的事件和 `javascript:` 連結一律不執行。
 
 ## 設定與記錄檔
@@ -86,7 +92,7 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 .\tools\smoke-test.ps1
 ```
 
-先跑單元測試（`MdViewer.Tests`，約 60 個「複製這段文字應該打開哪個檔」的例子：絕對 / 相對路徑、只有檔名、
+先跑單元測試（`MdViewer.Tests`，約 85 個，大多是「複製這段文字應該打開哪個檔」的例子：絕對 / 相對路徑、只有檔名、
 含空白的路徑、黏在中文句子裡的路徑、`#標題`），再用 `tools\fixtures\` 的測試文件把主要功能跑一遍，
 最後檢查系統匣：✕ 會縮到系統匣、複製路徑會叫回視窗、`--exit` 能結束。需要 Node.js 22 以上。
 只想跑單元測試（幾秒鐘，不會動到正在執行的 MdViewer）：`dotnet test MdViewer.Tests`。
@@ -99,8 +105,10 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 | `MdViewer/Program.cs` | 進入點、只允許一個程式（第二次開啟會把路徑交給已開的視窗）、`--tray` / `--exit` |
 | `MdViewer/MainForm.cs` | 視窗、系統匣、剪貼簿監控、Markdown 轉 HTML（Markdig）、提供網頁內容給 WebView2 |
 | `MdViewer/PathFinder.cs` | 從複製或貼上的文字找出要打開的檔案（剪貼簿、快速開啟共用） |
+| `MdViewer/SafePath.cs` | 檢查檔案或資料夾在不在；網路磁碟沒回應時不會卡住（所有檢查都經過這裡） |
+| `MdViewer/TextFiles.cs` | 讀檔與辨識編碼（顯示和全文搜尋共用） |
 | `MdViewer/Themes.cs` | 12 種主題的顏色、設定檔的讀寫 |
 | `MdViewer/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX |
 | `tools/make-icon.ps1` | 產生 `app.ico` |
-| `MdViewer.Tests/` | `PathFinder` 的單元測試 |
+| `MdViewer.Tests/` | `PathFinder`、`SafePath`、`TextFiles` 的單元測試，以及速度測試 |
 | `tools/smoke-test.ps1`、`tools/smoke.mjs` | 自動化測試（含單元測試） |

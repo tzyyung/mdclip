@@ -29,6 +29,10 @@ sealed class MainForm : Form
     const string Origin = $"https://{Host}/";
     static readonly HashSet<string> SkipDirs = new(StringComparer.OrdinalIgnoreCase)
         { "node_modules", "bin", "obj", "target", "dist", "build", "__pycache__", "venv", "packages" };
+
+    // Folders the tree leaves out, and whose changes are therefore ignored: hidden ones (.git, .vs, ...)
+    // and build or package output.
+    static bool IsSkippedDir(string name) => name.StartsWith('.') || SkipDirs.Contains(name);
     static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
         .UseAutoIdentifiers(AutoIdentifierOptions.GitHub) // keeps CJK heading ids
         .UseAdvancedExtensions()
@@ -80,6 +84,14 @@ sealed class MainForm : Form
         BackColor = theme.Color("bg");
 
         watcher.Changed += OnFsEvent;
+        // Too many changes at once for Windows to report them all: some were lost, so refresh everything.
+        watcher.Error += (_, _) => BeginInvoke(() =>
+        {
+            treeDirty = true;
+            if (lastOpened is { } open) changedFiles.Add(open);
+            debounce.Stop();
+            debounce.Start();
+        });
         watcher.Created += OnFsEvent;
         watcher.Deleted += OnFsEvent;
         watcher.Renamed += OnFsEvent;
@@ -113,21 +125,21 @@ sealed class MainForm : Form
     // file read if it is still there under the last root (so a restart comes back to the same page).
     string? ChooseRoot(string? startPath)
     {
-        if (startPath is null && Directory.Exists(settings.Root)
-            && settings.History.FirstOrDefault() is { } last && File.Exists(last.Path) && IsUnder(last.Path, settings.Root))
+        if (startPath is null && SafePath.DirectoryExists(settings.Root)
+            && settings.History.FirstOrDefault() is { } last && SafePath.FileExists(last.Path) && IsUnder(last.Path, settings.Root))
         {
             SetRoot(settings.Root);
             startScroll = last.Scroll;
             return last.Path;
         }
-        if (startPath is not null && File.Exists(startPath))
+        if (startPath is not null && SafePath.FileExists(startPath))
         {
             var full = Path.GetFullPath(startPath);
             SetRoot(FindRoot(full));
             return full;
         }
-        if (startPath is not null && Directory.Exists(startPath)) SetRoot(startPath);
-        else if (Directory.Exists(settings.Root)) SetRoot(settings.Root);
+        if (startPath is not null && SafePath.DirectoryExists(startPath)) SetRoot(startPath);
+        else if (SafePath.DirectoryExists(settings.Root)) SetRoot(settings.Root);
         else SetRoot(Environment.CurrentDirectory);
         return null;
     }
@@ -153,7 +165,7 @@ sealed class MainForm : Form
         core.WebMessageReceived += OnMessage;
 
         string? startRel = null;
-        if (lastOpened is { } file && File.Exists(file))
+        if (lastOpened is { } file && SafePath.FileExists(file))
         {
             if (!IsUnder(file, root)) SetRoot(FindRoot(file));
             startRel = ToRel(file);
@@ -198,7 +210,7 @@ sealed class MainForm : Form
         web = null;
         appReady = false;
         afterReady.Clear();
-        searchCache.Clear();
+        ClearSearchCache();
         Controls.Remove(view);
         view.Dispose();
         // Hidden in the tray for possibly hours: give back what the page used.
@@ -224,7 +236,7 @@ sealed class MainForm : Form
         menu.Opening += (_, _) =>
         {
             recent.DropDownItems.Clear();
-            foreach (var h in settings.History.Where(h => File.Exists(h.Path)).Take(15))
+            foreach (var h in settings.History.Where(h => SafePath.FileExists(h.Path)).Take(15))
             {
                 var folder = Path.GetFileName(Path.GetDirectoryName(h.Path));
                 recent.DropDownItems.Add(new ToolStripMenuItem(Path.GetFileName(h.Path), null, (_, _) => OpenRecent(h))
@@ -381,9 +393,9 @@ sealed class MainForm : Form
     {
         if (path == Program.ExitRequest) { ExitApp(); return; }
         if (string.IsNullOrEmpty(path)) { }
-        else if (Directory.Exists(path)) SetRoot(path);
-        else if (File.Exists(path) && web is null) lastOpened = path; // the page about to load opens it
-        else if (File.Exists(path) && OpenPath(path) is { } rel) PostWhenReady(new { type = "open", rel });
+        else if (SafePath.DirectoryExists(path)) SetRoot(path);
+        else if (SafePath.FileExists(path) && web is null) lastOpened = path; // the page about to load opens it
+        else if (SafePath.FileExists(path) && OpenPath(path) is { } rel) PostWhenReady(new { type = "open", rel });
         ShowFromTray(activate: true);
     }
 
@@ -418,7 +430,7 @@ sealed class MainForm : Form
     static string FindRoot(string file)
     {
         for (var d = new FileInfo(file).Directory; d is not null; d = d.Parent)
-            if (Directory.Exists(Path.Combine(d.FullName, ".git"))) return d.FullName;
+            if (SafePath.DirectoryExists(Path.Combine(d.FullName, ".git"))) return d.FullName;
         return Path.GetDirectoryName(file)!;
     }
 
@@ -451,7 +463,7 @@ sealed class MainForm : Form
     // or switches root and returns null for a folder.
     string? OpenPath(string path)
     {
-        if (Directory.Exists(path)) { SetRoot(path); return null; }
+        if (SafePath.DirectoryExists(path)) { SetRoot(path); return null; }
         if (!IsUnder(path, root)) SetRoot(FindRoot(path));
         return ToRel(path);
     }
@@ -490,7 +502,7 @@ sealed class MainForm : Form
                 settings.Save();
                 break;
             case "opened":
-                if (FromRel(Str("rel")) is { } opened && File.Exists(opened)) // not for a "not found" page
+                if (FromRel(Str("rel")) is { } opened && SafePath.FileExists(opened)) // not for a "not found" page
                 {
                     lastOpened = opened;
                     settings.RememberDir(Path.GetDirectoryName(opened)!);
@@ -533,7 +545,7 @@ sealed class MainForm : Form
             case "drop": OpenDropped(e.AdditionalObjects?.OfType<CoreWebView2File>().Select(f => f.Path).ToList() ?? []); break;
             case "exportPdf": ExportPdf(Str("rel"), Str("html")); break;
             case "openPdf":
-                if (Str("path") is var pdf && pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) && File.Exists(pdf))
+                if (Str("path") is var pdf && pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) && SafePath.FileExists(pdf))
                     OpenExternal(pdf);
                 break;
         }
@@ -556,8 +568,8 @@ sealed class MainForm : Form
     void OpenDropped(List<string> paths)
     {
         if (paths.FirstOrDefault() is not { } path) return;
-        if (Directory.Exists(path)) SetRoot(path);
-        else if (File.Exists(path) && OpenPath(path) is { } rel) Post(new { type = "open", rel });
+        if (SafePath.DirectoryExists(path)) SetRoot(path);
+        else if (SafePath.FileExists(path) && OpenPath(path) is { } rel) Post(new { type = "open", rel });
         Activate();
     }
 
@@ -612,7 +624,7 @@ sealed class MainForm : Form
 
     // The reading history as the web app shows it: full path, when, and whether the file is still there.
     object[] HistoryItems() => settings.History
-        .Select(h => (object)new { path = h.Path, when = new DateTimeOffset(h.When).ToUnixTimeMilliseconds(), scroll = h.Scroll, exists = File.Exists(h.Path) })
+        .Select(h => (object)new { path = h.Path, when = new DateTimeOffset(h.When).ToUnixTimeMilliseconds(), scroll = h.Scroll, exists = SafePath.FileExists(h.Path) })
         .ToArray();
 
     // ---------- full-text search ----------
@@ -658,13 +670,23 @@ sealed class MainForm : Form
         });
     }
 
+    // Kept to about 64 MB of text: past that the cache starts over rather than growing with a huge folder.
+    const long MaxSearchCacheChars = 32_000_000;
+    long searchCacheChars;
+
     string[] ReadForSearch(string path)
     {
         var written = File.GetLastWriteTimeUtc(path);
         if (searchCache.TryGetValue(path, out var cached) && cached.Written == written) return cached.Lines;
-        var lines = File.ReadAllLines(path);
-        searchCache[path] = (written, lines);
-        return lines;
+        var text = TextFiles.ReadText(path);
+        if (Interlocked.Add(ref searchCacheChars, text.Length) > MaxSearchCacheChars) ClearSearchCache();
+        return (searchCache[path] = (written, text.Split('\n').Select(l => l.TrimEnd('\r')).ToArray())).Lines;
+    }
+
+    void ClearSearchCache()
+    {
+        searchCache.Clear();
+        Interlocked.Exchange(ref searchCacheChars, 0);
     }
 
     // The hit with some text on each side, split so the page can mark the match.
@@ -695,13 +717,14 @@ sealed class MainForm : Form
     }
 
     // Forgets remembered folders that no longer exist; checked in the background since a folder on a
-    // disconnected network drive can take seconds to answer.
+    // disconnected network drive can take seconds to answer. A share that does not answer is kept: being
+    // away from the office must not forget its folders.
     void PruneMissingDirs()
     {
         var dirs = settings.Dirs.ToList();
         Task.Run(() =>
         {
-            var missing = dirs.Where(d => !Directory.Exists(d)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var missing = dirs.Where(d => SafePath.Reachable(d) && !Directory.Exists(d)).ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (missing.Count > 0 && IsHandleCreated) BeginInvoke(() => { settings.Dirs.RemoveAll(missing.Contains); settings.Save(); });
         });
     }
@@ -797,7 +820,7 @@ sealed class MainForm : Form
         {
             if (Clipboard.ContainsFileDropList())
             {
-                var copied = Clipboard.GetFileDropList().Cast<string>().Where(f => IsListed(f) && File.Exists(f)).Take(settings.ClipMax + 1).ToList();
+                var copied = Clipboard.GetFileDropList().Cast<string>().Where(f => IsListed(f) && SafePath.FileExists(f)).Take(settings.ClipMax + 1).ToList();
                 if (copied.Count == 1) found = copied[0];
                 else (files, more) = (copied.Take(settings.ClipMax).ToList(), copied.Count > settings.ClipMax);
             }
@@ -907,6 +930,8 @@ sealed class MainForm : Form
         var structural = e.ChangeType != WatcherChangeTypes.Changed;
         var md = IsMarkdown(e.FullPath);
         if (!IsListed(e.FullPath) && !(structural && !Path.HasExtension(e.FullPath))) return;
+        // A git checkout or package install changes thousands of files in folders the tree leaves out.
+        if (Path.GetRelativePath(root, e.FullPath).Split('\\').SkipLast(1).Any(IsSkippedDir)) return;
         BeginInvoke(() =>
         {
             if (structural) treeDirty = true;
@@ -955,7 +980,7 @@ sealed class MainForm : Form
             }
 
             var path = FromRel(rel);
-            if (path is null || !File.Exists(path))
+            if (path is null || !SafePath.FileExists(path))
             {
                 e.Response = Respond(env, Encoding.UTF8.GetBytes(ErrorPage("找不到檔案", rel)), "text/html; charset=utf-8", 404);
                 return;
@@ -968,7 +993,7 @@ sealed class MainForm : Form
             }
             e.Response = IsMarkdown(path) ? Respond(env, Encoding.UTF8.GetBytes(RenderMarkdown(path)), "text/html; charset=utf-8")
                 : mime.StartsWith("text/plain") ? Respond(env, Encoding.UTF8.GetBytes(RenderPlain(path)), "text/html; charset=utf-8")
-                : Respond(env, ReadShared(path), mime);
+                : Respond(env, TextFiles.ReadBytes(path), mime);
         }
         catch (IOException ex)
         {
@@ -1064,7 +1089,7 @@ sealed class MainForm : Form
         var items = new List<TreeItem>();
         foreach (var d in dirs)
         {
-            if (d.Name.StartsWith('.') || SkipDirs.Contains(d.Name) || d.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
+            if (IsSkippedDir(d.Name) || d.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
             if (BuildChildren(d, root) is { Count: > 0 } children) items.Add(new(d.Name, null, children));
         }
         foreach (var f in files)
@@ -1073,16 +1098,6 @@ sealed class MainForm : Form
     }
 
     // ---------- rendering ----------
-
-    static byte[] ReadShared(string path)
-    {
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        using var ms = new MemoryStream();
-        fs.CopyTo(ms);
-        return ms.ToArray();
-    }
-
-    static string ReadText(string path) => new UTF8Encoding(false).GetString(ReadShared(path)).TrimStart('﻿');
 
     int TakeStartScroll()
     {
@@ -1093,7 +1108,7 @@ sealed class MainForm : Form
 
     string RenderMarkdown(string path)
     {
-        var doc = Markdown.Parse(ReadText(path), Pipeline);
+        var doc = Markdown.Parse(TextFiles.ReadText(path), Pipeline);
         using var writer = new StringWriter();
         var renderer = new HtmlRenderer(writer);
         Pipeline.Setup(renderer);
@@ -1157,7 +1172,7 @@ sealed class MainForm : Form
     }
 
     string RenderPlain(string path) =>
-        Page(Path.GetFileName(path), $"<h1>{WebUtility.HtmlEncode(Path.GetFileName(path))}</h1><pre class=\"plain\"><code>{WebUtility.HtmlEncode(ReadText(path))}</code></pre>");
+        Page(Path.GetFileName(path), $"<h1>{WebUtility.HtmlEncode(Path.GetFileName(path))}</h1><pre class=\"plain\"><code>{WebUtility.HtmlEncode(TextFiles.ReadText(path))}</code></pre>");
 
     // Standalone image viewer (wheel zoom, drag pan) shown when an image file is opened from the tree.
     string ImagePage(string rel)
@@ -1196,13 +1211,17 @@ sealed class MainForm : Form
         "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
         "connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 
+    // Pages past this size (HTML characters) are marked "big": doc.css then lets the browser skip laying
+    // out what is off screen, which is most of the time spent opening a document of several MB.
+    const int BigPage = 500_000;
+
     string Page(string title, string body) => $$"""
         <!doctype html>
         <html data-theme="{{theme.Id}}"><head><meta charset="utf-8">
         <meta http-equiv="Content-Security-Policy" content="{{DocumentPolicy}}">
         <title>{{WebUtility.HtmlEncode(title)}}</title>
         <style>{{Themes.Css}}{{Resource("doc.css")}}</style></head>
-        <body><main>{{body}}</main></body></html>
+        <body{{(body.Length > BigPage ? " class=\"big\"" : "")}}><main>{{body}}</main></body></html>
         """;
 
     static string MimeFor(string path) => Path.GetExtension(path).ToLowerInvariant() switch

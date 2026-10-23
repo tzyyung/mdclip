@@ -316,7 +316,39 @@ $("filter").addEventListener("keydown", (e) => {
 
 function saveScroll() {
   const entry = state.hist[state.at];
-  if (entry && state.current) entry.scroll = frame.contentWindow.scrollY;
+  if (entry && state.current) entry.scroll = readPosition();
+}
+
+// ---------- reading position ----------
+
+// A position is the page's scroll offset in pixels: what the tab history and the host's reading history
+// keep. In a big document the browser only estimates the parts off screen (doc.css), so the same offset
+// lands elsewhere after reopening; there the block (paragraph, table, ...) at the top of the view and the
+// distance past its top are noted under the offset too, and used to come back to the same line. That
+// block is on screen, so its place is real, not estimated.
+const anchors = store.get("anchors", {}); // "root|rel|offset" -> [index of the block in <main>, pixels past its top]
+const anchorKey = (y) => `${cfg.root}|${state.current}|${y}`;
+
+function readPosition() {
+  const win = frame.contentWindow, doc = win.document, y = Math.round(win.scrollY);
+  const blocks = doc.body?.classList.contains("big") && doc.querySelector("main")?.children;
+  if (blocks?.length) {
+    const i = lastAbove(blocks.length, (k) => blocks[k], 0);
+    anchors[anchorKey(y)] = [i, Math.round(-blocks[i].getBoundingClientRect().top)];
+    for (const key of Object.keys(anchors).slice(0, -30)) delete anchors[key]; // the 30 latest
+    store.set("anchors", anchors);
+  }
+  return y;
+}
+
+function applyPosition(win, y, frames = 4) {
+  const a = win.document.body.classList.contains("big") ? anchors[anchorKey(y)] : null;
+  const block = a && win.document.querySelector("main")?.children[a[0]];
+  if (!block) { win.scrollTo(0, y); return; }
+  block.scrollIntoView({ block: "start" });
+  win.scrollBy(0, block.getBoundingClientRect().top + a[1]);
+  // The blocks around it are laid out for real over the next frames and shift it: settle it again.
+  if (frames > 1) win.requestAnimationFrame(() => applyPosition(win, y, frames - 1));
 }
 
 function load(rel, pending) {
@@ -345,7 +377,7 @@ function go(delta) {
 
 function reloadDoc() {
   if (!state.current) return;
-  state.pending = { scroll: frame.contentWindow.scrollY };
+  state.pending = { scroll: readPosition() };
   frame.contentWindow.location.reload();
 }
 
@@ -392,7 +424,7 @@ frame.addEventListener("load", () => {
   addDocButtons(doc);
   const restore = () => {
     if (p?.hash) scrollToHash(p.hash, false);
-    else if (p?.scroll) win.scrollTo(0, p.scroll);
+    else if (p?.scroll) applyPosition(win, p.scroll);
   };
   restore();
   // Diagrams change the page height, so the position is restored again once they are drawn,
@@ -448,7 +480,7 @@ function hookDoc(doc) {
     clearTimeout(report);
     report = setTimeout(() => {
       if (doc === frame.contentDocument && state.current && !isImage(state.current))
-        post({ type: "scroll", rel: state.current, y: Math.round(doc.defaultView.scrollY) });
+        post({ type: "scroll", rel: state.current, y: readPosition() });
     }, 700);
     if (ticking) return;
     ticking = true;
@@ -497,25 +529,41 @@ function collectHeadings(doc) {
   state.headings = hs.map((h) => ({ id: h.id, text: h.textContent.trim(), depth: +h.tagName[1] - base, el: h }));
 }
 
+let activeTocLink = null; // the outline entry marked as the current section
+
 function renderToc(emptyText) {
   $("toc-list").innerHTML = state.headings.length
     ? state.headings.map((h) => `<li><a href="#${esc(h.id)}" data-id="${esc(h.id)}" style="--d:${h.depth}">${esc(h.text)}</a></li>`).join("")
     : `<li class="none">${emptyText ?? (state.current ? "這篇沒有小標題" : "尚未開啟文件")}</li>`;
+  activeTocLink = null;
   updateActiveHeading();
 }
 
+// Of `count` elements in page order (element i is elAt(i)), the last whose top is at most `limit` px from
+// the top of the view, else the first. Binary search: it runs on every scroll frame, and a long document
+// has thousands of headings and blocks.
+function lastAbove(count, elAt, limit) {
+  let found = 0;
+  for (let lo = 0, hi = count - 1; lo <= hi;) {
+    const mid = (lo + hi) >> 1;
+    if (elAt(mid).getBoundingClientRect().top <= limit) { found = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return found;
+}
+
+// Marks the current section in the outline, touching only the entries that change.
 function updateActiveHeading() {
   const hs = state.headings;
   if (!hs.length) return;
   const win = frame.contentWindow;
-  let active = hs[0];
-  for (const h of hs) { if (h.el.getBoundingClientRect().top <= 100) active = h; else break; }
-  if (win.innerHeight + win.scrollY >= win.document.documentElement.scrollHeight - 4) active = hs[hs.length - 1];
-  for (const a of $("toc-list").querySelectorAll("a")) {
-    const on = a.dataset.id === active.id;
-    if (on && !a.classList.contains("active")) a.scrollIntoView({ block: "nearest" });
-    a.classList.toggle("active", on);
-  }
+  let active = lastAbove(hs.length, (i) => hs[i].el, 100);
+  if (win.innerHeight + win.scrollY >= win.document.documentElement.scrollHeight - 4) active = hs.length - 1;
+  const link = $("toc-list").children[active]?.firstElementChild;
+  if (!link || link === activeTocLink) return;
+  activeTocLink?.classList.remove("active");
+  link.classList.add("active");
+  link.scrollIntoView({ block: "nearest" });
+  activeTocLink = link;
 }
 
 $("toc-list").addEventListener("click", (e) => {

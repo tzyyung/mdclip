@@ -4,6 +4,7 @@
 //   node smoke.mjs <port> <fixtures folder>
 // SMOKE_ONLY=<text> runs only the checks whose name contains it (opening the start file always runs);
 // SMOKE_REPEAT=<n> runs each check n times.
+import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
@@ -288,6 +289,34 @@ await check("help panel", async () => {
   const n = await js("$('help-body').querySelectorAll('section').length");
   await js("closeHelp()");
   expect(n === 5, "sections: " + n);
+});
+
+await check("big document: quick, and reopens at the same line", async () => {
+  // About 1.3 MB: past the size where off-screen parts are only estimated (doc.css "big").
+  const para = "這次修改主要是調整清單排序的規則，原本的做法在重複項目上會多算一次，細節請參考說明。 **重點** 與 `code`。\n\n";
+  let text = "# 大文件\n\n";
+  for (let i = 0; i < 900; i++) text += `## 第 ${i} 節\n\n${para.repeat(6)}\`\`\`csharp\npublic sealed class Gate${i} { }\n\`\`\`\n\n`;
+  const file = path.join(fixtures, "big.md");
+  fs.writeFileSync(file, text);
+  try {
+    const start = Date.now();
+    await open("big.md");
+    const took = Date.now() - start;
+    expect(await js("frame.contentDocument.body.classList.contains('big')"), "not marked big");
+    const id = await js("state.headings[700].id");
+    await js(`scrollToHash(${JSON.stringify(id)}, false)`);
+    await sleep(1200); // the position is saved after a pause in scrolling
+    const before = await js(`Math.round(frame.contentDocument.getElementById(${JSON.stringify(id)}).getBoundingClientRect().top)`);
+    await open("guide.md");
+    await js("go(-1)");
+    await waitFor(`state.current === ${JSON.stringify(rel("big.md"))} && !state.pending`);
+    await sleep(800);
+    const after = await js(`Math.round(frame.contentDocument.getElementById(${JSON.stringify(id)}).getBoundingClientRect().top)`);
+    expect(Math.abs(after - before) <= 4, `heading was at ${before}px, now ${after}px`);
+    return `opened in ${took} ms`;
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
 });
 
 await check("scripts inside documents never run", async () => {
