@@ -12,24 +12,24 @@
 <body>
 <header class="topbar">
   <div class="group">
-    <button id="back" class="icon" title="上一頁 (Alt+←)" disabled></button>
-    <button id="forward" class="icon" title="下一頁 (Alt+→)" disabled></button>
-    <button id="reload" class="icon" title="重新整理 (F5)"></button>
-    <button id="history" class="icon" title="閱讀紀錄 (Ctrl+H)"></button>
+    <button id="back" class="icon" data-key="back" disabled></button>
+    <button id="forward" class="icon" data-key="forward" disabled></button>
+    <button id="reload" class="icon" data-key="reload"></button>
+    <button id="history" class="icon" data-key="history"></button>
   </div>
   <nav id="crumbs" class="crumbs" aria-label="目前位置"></nav>
-  <button id="search" class="search-pill" title="快速開啟 (Ctrl+P)">
-    <span class="ico" id="search-ico"></span><span class="label">搜尋檔案或貼上路徑</span><kbd>Ctrl P</kbd>
+  <button id="search" class="search-pill" data-key="palette">
+    <span class="ico" id="search-ico"></span><span class="label">搜尋檔案或貼上路徑</span><kbd data-keys="palette"></kbd>
   </button>
   <div class="group zoom" role="group" aria-label="文字大小">
-    <button id="zoom-out" class="icon txt" title="縮小文字 (Ctrl+-)">A−</button>
-    <button id="zoom-reset" class="pct" title="恢復 100% (Ctrl+0)">100%</button>
-    <button id="zoom-in" class="icon txt" title="放大文字 (Ctrl+=)">A+</button>
+    <button id="zoom-out" class="icon txt" data-key="zoomOut">A−</button>
+    <button id="zoom-reset" class="pct" data-key="zoomReset">100%</button>
+    <button id="zoom-in" class="icon txt" data-key="zoomIn">A+</button>
   </div>
   <div class="group">
-    <button id="toggle-side" class="icon" title="檔案側欄 (Ctrl+B)"></button>
-    <button id="toggle-toc" class="icon" title="本篇大綱 (Ctrl+J)"></button>
-    <button id="toggle-zen" class="icon" title="專注閱讀 (F11)"></button>
+    <button id="toggle-side" class="icon" data-key="side"></button>
+    <button id="toggle-toc" class="icon" data-key="toc"></button>
+    <button id="toggle-zen" class="icon" data-key="zen"></button>
     <span class="divider"></span>
     <button id="dark" class="icon"></button>
     <button id="theme" class="icon" title="主題"></button>
@@ -40,7 +40,7 @@
 <aside class="side" id="side" aria-label="檔案">
   <div class="side-head">
     <div class="proj"><span id="proj-name"></span><span id="proj-path"></span></div>
-    <button id="change-root" class="icon sm" title="開啟資料夾 (Ctrl+Shift+O)"></button>
+    <button id="change-root" class="icon sm" data-key="openFolder"></button>
   </div>
   <div class="filter">
     <input id="filter" placeholder="篩選檔案" spellcheck="false" autocomplete="off">
@@ -58,15 +58,15 @@
   <div class="findbar" id="findbar" role="search" hidden>
     <input id="find-input" placeholder="在本篇中尋找" spellcheck="false" autocomplete="off">
     <span class="count" id="find-count"></span>
-    <button id="find-prev" class="icon sm" title="上一個 (Shift+Enter)"></button>
-    <button id="find-next" class="icon sm" title="下一個 (Enter)"></button>
-    <button id="find-close" class="icon sm" title="關閉 (Esc)"></button>
+    <button id="find-prev" class="icon sm" data-key="findUp"></button>
+    <button id="find-next" class="icon sm" data-key="findDown"></button>
+    <button id="find-close" class="icon sm" data-key="close"></button>
   </div>
   <div class="empty" id="empty" hidden>
     <h2>選一份文件開始閱讀</h2>
     <p>從左側檔案清單點選，或用快速開啟搜尋檔名、直接貼上路徑。</p>
     <div class="acts">
-      <button class="btn primary" id="empty-search">快速開啟 <kbd>Ctrl P</kbd></button>
+      <button class="btn primary" id="empty-search">快速開啟 <kbd data-keys="palette"></kbd></button>
       <button class="btn" id="empty-folder">開啟資料夾…</button>
     </div>
   </div>
@@ -96,13 +96,13 @@
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="help" id="help" role="dialog" aria-label="快捷鍵與功能" hidden>
   <div class="help-box">
-    <div class="help-head"><h2>快捷鍵與功能</h2><button class="icon sm" title="關閉 (Esc)">✕</button></div>
+    <div class="help-head"><h2>快捷鍵與功能</h2><button class="icon sm" data-key="close">✕</button></div>
     <div class="help-body" id="help-body"></div>
   </div>
 </div>
 <div class="help" id="clipset" role="dialog" aria-label="剪貼簿設定" hidden>
   <div class="help-box clipset-box">
-    <div class="help-head"><h2>剪貼簿設定</h2><button class="icon sm" title="關閉 (Esc)">✕</button></div>
+    <div class="help-head"><h2>剪貼簿設定</h2><button class="icon sm" data-key="close">✕</button></div>
     <form class="clipset-body" id="clipset-form">
       <fieldset>
         <legend>複製到 .md 或圖片的路徑時</legend>

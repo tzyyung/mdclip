@@ -45,7 +45,7 @@ async function waitFor(expr, ms = 5000) {
     try { if (await js(expr)) return true; } catch { /* the page script may not have run yet */ }
   }
   // What the page was showing instead, for intermittent failures.
-  const seen = await js("JSON.stringify({ current: state.current, pending: !!state.pending, toast: $('toast').hidden ? null : $('toast').textContent })");
+  const seen = await js(`JSON.stringify({ current: state.current, pending: !!state.pending, toast: ${toastJs} })`);
   throw new Error("timed out waiting for: " + expr + "  page: " + seen);
 }
 
@@ -76,6 +76,21 @@ async function check(name, fn) {
   }
 }
 const expect = (cond, msg) => { if (!cond) throw new Error(msg); };
+
+// The page's toast: its text ("" when hidden), a wait for a text in it, and its button.
+const toastJs = "($('toast').hidden ? '' : $('toast').textContent)";
+const toastText = () => js(toastJs);
+const waitForToast = (part, ms = 5000) => waitFor(`${toastJs}.includes(${JSON.stringify(part)})`, ms);
+const pressToast = () => js("$('toast').querySelector('.act').click()");
+
+// Changes the clipboard settings through their panel, as a user would.
+const setClipOptions = (opts) => js(`(() => {
+  openClipSettings();
+  const f = $('clipset-form').elements, o = ${JSON.stringify(opts)};
+  for (const k in o) f[k].value = o[k];
+  f.max.dispatchEvent(new Event('change', { bubbles: true }));
+  closeDialog();
+})()`);
 
 await check("opens the start file", async () => {
   await waitFor("(state.current ?? '').endsWith('guide.md')", 15000);
@@ -118,7 +133,7 @@ await check("copy button copies the code", async () => {
   await sleep(500);
   const text = getClipboard();
   expect(text === "public sealed class Gate { public int Count = 42; }", "clipboard: " + text);
-  const toast = await js("$('toast').hidden ? '' : $('toast').textContent");
+  const toast = await toastText();
   expect(!toast.includes("剪貼簿"), "our own copy came back as a clipboard find: " + toast);
 });
 
@@ -140,23 +155,22 @@ await check("clipboard: bare file name opens", async () => {
   await waitFor(`state.current === ${JSON.stringify(rel("other.md"))}`, 5000);
 });
 
-const toastText = () => js("$('toast').hidden ? '' : $('toast').querySelector('.msg').textContent");
 const passage = (file) => "這次修改主要是調整清單排序的規則，原本的做法在重複項目上會多算一次，細節請參考 " + file + " 裡第三節的說明，另外也更新了測試資料。";
 
 await check("clipboard: a passage mentioning a file only offers it", async () => {
   await open("guide.md");
   setClipboard(passage(path.join(fixtures, "other.md")));
-  await waitFor("!$('toast').hidden && $('toast').textContent.includes('剪貼簿裡提到')", 5000);
+  await waitForToast("剪貼簿裡提到");
   expect(await js("state.current") === rel("guide.md"), "the page changed");
-  await js("$('toast').querySelector('.act').click()");
+  await pressToast();
   await waitFor(`state.current === ${JSON.stringify(rel("other.md"))}`);
 });
 
 await check("clipboard: several files are listed to pick from", async () => {
   setClipboard(`${path.join(fixtures, "guide.md")}\n${path.join(fixtures, "evil.md")}`);
-  await waitFor("!$('toast').hidden && $('toast').textContent.includes('2 個檔案')", 5000);
+  await waitForToast("2 個檔案");
   expect(await js("state.current") === rel("other.md"), "the page changed");
-  await js("$('toast').querySelector('.act').click()");
+  await pressToast();
   const names = await js("pal.mode === 'pick' ? pal.items.map(i => i.path.split('\\\\').pop()).join(',') : 'mode ' + pal.mode");
   expect(names === "guide.md,evil.md", "list: " + names);
   await js("choose(pal.items[0])");
@@ -165,25 +179,15 @@ await check("clipboard: several files are listed to pick from", async () => {
 
 await check("clipboard settings change what opens by itself", async () => {
   const before = await js("clipOpts.chars");
-  const setChars = (n) => js(`openClipSettings(); $('clipset-form').elements.chars.value = ${n}; $('clipset-form').elements.chars.dispatchEvent(new Event('change', { bubbles: true })); closeDialog()`);
-  await setChars(500);
+  await setClipOptions({ chars: 500 });
   try {
     setClipboard(passage(path.join(fixtures, "other.md")));
     await waitFor(`state.current === ${JSON.stringify(rel("other.md"))}`, 5000);
   } finally {
-    await setChars(before);
+    await setClipOptions({ chars: before });
   }
   expect(await js("clipOpts.chars") === before, "not restored");
 });
-
-// Changes the clipboard settings through their panel, as a user would.
-const setClipOptions = (opts) => js(`(() => {
-  openClipSettings();
-  const f = $('clipset-form').elements, o = ${JSON.stringify(opts)};
-  for (const k in o) f[k].value = o[k];
-  f.max.dispatchEvent(new Event('change', { bubbles: true }));
-  closeDialog();
-})()`);
 
 await check("clipboard: list limit and open-the-first", async () => {
   const before = await js("({ multi: clipOpts.multi, max: clipOpts.max })");
@@ -191,20 +195,42 @@ await check("clipboard: list limit and open-the-first", async () => {
   try {
     await setClipOptions({ multi: "list", max: 2 });
     setClipboard(three);
-    await waitFor("!$('toast').hidden && $('toast').textContent.includes('超過 2 個檔案')", 5000);
-    await js("$('toast').querySelector('.act').click()");
+    await waitForToast("超過 2 個檔案");
+    await pressToast();
     expect(await js("pal.items.length === 2 && pal.note.includes('只列出前 2 個')"), "list: " + await js("pal.note"));
     await js("closePalette()");
 
     await setClipOptions({ multi: "first", max: 5 });
     setClipboard(three);
-    await waitFor(`state.current === ${JSON.stringify(rel("guide.md"))} && $('toast').textContent.includes('還有其他檔案')`, 5000);
-    await js("$('toast').querySelector('.act').click()");
+    await waitFor(`state.current === ${JSON.stringify(rel("guide.md"))} && ${toastJs}.includes('還有其他檔案')`, 5000);
+    await pressToast();
     await waitFor("pal.mode === 'pick' && !$('palette').hidden && pal.items.length === 3", 5000);
     await js("closePalette()");
   } finally {
     await setClipOptions(before);
   }
+});
+
+await check("keyboard shortcuts work from the KEYS table", async () => {
+  const press = (key, mods = {}) => js(`document.dispatchEvent(new KeyboardEvent("keydown", ${JSON.stringify({ key, bubbles: true, cancelable: true, ...mods })}))`);
+  const side = await js("layout.side");
+  await press("b", { ctrlKey: true });
+  expect(await js("layout.side") === !side, "Ctrl+B did not toggle the file panel");
+  await press("b", { ctrlKey: true });
+  await press("?", { shiftKey: true });
+  expect(await js("!$('help').hidden"), "? did not open the help panel");
+  await press("Escape");
+  expect(await js("$('help').hidden"), "Esc did not close the help panel");
+  await press("t", { ctrlKey: true });
+  expect(await js("state.tabs.length === 2"), "Ctrl+T did not open a tab");
+  await js("closePalette()");
+  await press("w", { ctrlKey: true });
+  await sleep(300);
+  expect(await js("state.tabs.length === 1"), "Ctrl+W did not close the tab");
+  await press("F", { ctrlKey: true, shiftKey: true });
+  expect(await js("pal.mode === 'text' && !$('palette').hidden"), "Ctrl+Shift+F did not open text search");
+  await js("closePalette()");
+  expect(await js("$('back').title === '上一頁 (Alt+←)' && $('search').querySelector('kbd').textContent === 'Ctrl+P'"), "tooltips or key labels not written from KEYS");
 });
 
 await check("quick open finds a file", async () => {

@@ -92,7 +92,7 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 .\tools\smoke-test.ps1
 ```
 
-先跑單元測試（`MdViewer.Tests`，約 85 個，大多是「複製這段文字應該打開哪個檔」的例子：絕對 / 相對路徑、只有檔名、
+先跑單元測試（`MdViewer.Tests`，約 140 個，大多是「複製這段文字應該打開哪個檔」的例子：絕對 / 相對路徑、只有檔名、
 含空白的路徑、黏在中文句子裡的路徑、`#標題`），再用 `tools\fixtures\` 的測試文件把主要功能跑一遍，
 最後檢查系統匣：✕ 會縮到系統匣、複製路徑會叫回視窗、`--exit` 能結束。需要 Node.js 22 以上。
 只想跑單元測試（幾秒鐘，不會動到正在執行的 MdViewer）：`dotnet test MdViewer.Tests`。
@@ -103,11 +103,17 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 | 路徑 | 內容 |
 |---|---|
 | `MdViewer/Program.cs` | 進入點、只允許一個程式（第二次開啟會把路徑交給已開的視窗）、`--tray` / `--exit` |
-| `MdViewer/MainForm.cs` | 視窗、系統匣、剪貼簿監控、Markdown 轉 HTML（Markdig）、提供網頁內容給 WebView2 |
-| `MdViewer/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX；`common.css` 是介面和文件頁共用的字型、顏色、捲軸 |
+| `MdViewer/MainForm.cs` | 視窗、系統匣、剪貼簿監控、提供網頁內容給 WebView2 |
+| `MdViewer/Native.cs` | 程式用到的 Windows API，集中一處 |
+| `MdViewer/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX；`common.css` 是介面和文件頁共用的字型、顏色、捲軸。快捷鍵都定義在 `app.js` 的 `KEYS` 表，說明面板、選單和按鈕提示都從這裡產生 |
 | `MdViewer.Core/` | 不需要視窗的部分，程式和測試共用的函式庫： |
-| `　Paths.cs` | 哪些副檔名算文件、圖片，完整路徑和相對路徑互換（唯一的清單，網頁也從這裡拿） |
+| `　AppInfo.cs` | 程式名稱、資料夾（`%LOCALAPPDATA%\MdViewer`）、命令列參數 |
+| `　Paths.cs` | 哪些副檔名算文件、圖片，各自的檔案類型，完整路徑和相對路徑互換（唯一的清單，網頁也從這裡拿） |
 | `　PathFinder.cs` | 從複製或貼上的文字找出要打開的檔案（剪貼簿、快速開啟共用） |
+| `　ClipboardPolicy.cs` | 剪貼簿找到檔案時要自動開、只提示還是列清單（視窗和系統匣共用同一套規則） |
+| `　DocumentTree.cs` | 檔案樹：要列哪些檔案、略過哪些資料夾、哪些檔案變動需要重新整理 |
+| `　DocumentSearch.cs` | 全文搜尋與快取 |
+| `　DocumentPages.cs` | 把 Markdown、純文字、圖片、錯誤訊息做成頁面（含文件資訊框、安全設定） |
 | `　SafePath.cs` | 檢查檔案或資料夾在不在；網路磁碟沒回應時不會卡住（所有檢查都經過這裡） |
 | `　TextFiles.cs` | 讀檔與辨識編碼（顯示和全文搜尋共用） |
 | `　Settings.cs` | 設定檔的讀寫，以及每個選項的合法值（讀檔、網頁、系統匣選單都照這裡） |

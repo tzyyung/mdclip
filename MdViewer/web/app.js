@@ -51,6 +51,12 @@ const store = {
   set(key, value) { try { localStorage.setItem("md:" + key, JSON.stringify(value)); } catch { /* ignore */ } },
 };
 
+// Matches a request to the host with its answer (resolve, search): only the latest one counts.
+const requestId = () => String(Date.now());
+
+// A tab with no page yet.
+function emptyTab() { return { hist: [], at: -1 }; }
+
 const state = {
   tree: [],
   files: [],            // flat list: { rel, name, dir }
@@ -61,7 +67,7 @@ const state = {
   headings: [],
   open: new Set(),      // expanded folders, per root
   history: cfg.history ?? [], // files read lately, across all roots: { path, when, exists }
-  tabs: [{ hist: [], at: -1 }], // each tab keeps its own back/forward list; state.hist/at are the active tab's
+  tabs: [emptyTab()], // each tab keeps its own back/forward list; state.hist/at are the active tab's
   tab: 0,
   theme: cfg.theme,
   lastLight: cfg.lastLight,
@@ -123,7 +129,7 @@ function applyTheme(id, save = true) {
   if (id !== cfg.autoTheme) { if (t.dark) state.lastDark = id; else state.lastLight = id; }
   setThemeAttr(t.id);
   $("dark").innerHTML = icon(t.dark ? "sun" : "moon");
-  $("dark").title = t.dark ? "切換為亮色 (Ctrl+D)" : "切換為暗色 (Ctrl+D)";
+  $("dark").title = withKey("dark", t.dark ? "切換為亮色" : "切換為暗色");
   if (save) post({ type: "theme", id, lastLight: state.lastLight, lastDark: state.lastDark });
   if (frame.contentDocument?.querySelector(".mermaid.figure")) renderDiagrams(frame.contentDocument);
 }
@@ -151,8 +157,10 @@ function applyLayout() {
   $("toggle-side").classList.toggle("on", layout.side && !layout.zen);
   $("toggle-toc").classList.toggle("on", layout.toc && !layout.zen);
   $("toggle-zen").classList.toggle("on", layout.zen);
-  store.set("layout", layout);
+  saveLayout();
 }
+
+const saveLayout = () => store.set("layout", layout);
 
 function toggleSide() { if (layout.zen) layout.zen = false; else layout.side = !layout.side; applyLayout(); }
 function toggleToc() { if (layout.zen) layout.zen = false; else layout.toc = !layout.toc; applyLayout(); }
@@ -181,7 +189,7 @@ function zoomStep(delta) {
   const next = delta === 0 ? 1 : ZOOMS[Math.min(ZOOMS.length - 1, Math.max(0, (i < 0 ? ZOOMS.indexOf(1) : i) + delta))];
   if (next === layout.zoom && delta !== 0) return;
   layout.zoom = next;
-  store.set("layout", layout);
+  saveLayout();
   applyZoom();
   if (delta !== 0 || next === 1) toast("文字大小 " + Math.round(next * 100) + "%");
 }
@@ -377,13 +385,18 @@ function load(rel, pending) {
   frame.contentWindow.location.replace(urlOf(rel) + (pending.hash || ""));
 }
 
+// A new page in the active tab's back/forward list, dropping the pages ahead of the current one.
+function pushHist(rel, scroll) {
+  state.hist.splice(state.at + 1);
+  state.hist.push({ rel, scroll });
+  state.at = state.hist.length - 1;
+}
+
 // scroll: reading position to restore; find: { q, nth } to open the find bar on that match.
 function navigate(rel, hash = "", scroll = 0, find = null) {
   if (!rel) return;
   saveScroll();
-  state.hist.splice(state.at + 1);
-  state.hist.push({ rel, scroll });
-  state.at = state.hist.length - 1;
+  pushHist(rel, scroll);
   load(rel, { hash, scroll, find });
 }
 
@@ -400,7 +413,7 @@ function openDoc(rel, { hash = "", scroll = 0, find = null, newTab = false } = {
 // A file outside the open folder (or a path to look up): the host finds it, switches folders if needed and
 // answers with "resolved", which opens it at `scroll`.
 function requestOpen(text, scroll = 0) {
-  pal.pendingId = String(Date.now());
+  pal.pendingId = requestId();
   pal.pendingScroll = scroll;
   post({ type: "resolve", text, id: pal.pendingId });
 }
@@ -444,11 +457,7 @@ frame.addEventListener("load", () => {
   const win = frame.contentWindow, doc = frame.contentDocument;
   if (!doc || win.location.href === "about:blank") return;
   const rel = relOf(win.location.pathname);
-  if (state.hist[state.at]?.rel !== rel) { // safety net for a navigation we did not start
-    state.hist.splice(state.at + 1);
-    state.hist.push({ rel, scroll: 0 });
-    state.at = state.hist.length - 1;
-  }
+  if (state.hist[state.at]?.rel !== rel) pushHist(rel, 0); // safety net for a navigation we did not start
   state.current = rel;
   doc.documentElement.dataset.theme = document.documentElement.dataset.theme;
   if (!doc.body.classList.contains("image-page")) doc.body.style.zoom = layout.zoom;
@@ -624,18 +633,19 @@ $("toc-list").addEventListener("click", (e) => {
 // mode "files": file names, pasted paths, # headings; mode "text": the contents of every document.
 const pal = { items: [], sel: 0, pendingId: null, pendingScroll: 0, mode: "files", note: "", searchId: null, timer: 0 };
 
+// foot: [keys, what they do] (keys as in keysOf; without the text, the shortcut's own label).
 const PALETTE_MODES = {
   files: {
     placeholder: "輸入檔名搜尋、貼上路徑，或用 # 跳到本篇標題",
-    foot: "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>Enter</kbd> 開啟</span><span><kbd>#</kbd> 本篇標題</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F</kbd> 搜尋內文</span>",
+    foot: [[["↑", "↓"], "選擇"], [["Enter"], "開啟"], [["#"], "本篇標題"], [["searchText"]]],
   },
   pick: {
     placeholder: "剪貼簿裡的檔案：輸入文字篩選",
-    foot: "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>Enter</kbd> 開啟</span><span><kbd>Ctrl</kbd><kbd>Enter</kbd> 在新分頁開啟</span>",
+    foot: [[["↑", "↓"], "選擇"], [["Enter"], "開啟"], [["openInTab"]]],
   },
   text: {
     placeholder: "搜尋所有文件的內文",
-    foot: "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>Enter</kbd> 開啟並跳到那一處</span><span><kbd>Ctrl</kbd><kbd>P</kbd> 改搜檔名</span>",
+    foot: [[["↑", "↓"], "選擇"], [["Enter"], "開啟並跳到那一處"], [["palette"], "改搜檔名"]],
   },
 };
 
@@ -647,7 +657,7 @@ function openPalette(prefix = "", mode = "files") {
   $("palette").hidden = false;
   $("palette").dataset.mode = mode;
   input.placeholder = PALETTE_MODES[mode].placeholder;
-  $("palette-foot").innerHTML = PALETTE_MODES[mode].foot;
+  $("palette-foot").innerHTML = PALETTE_MODES[mode].foot.map(([keys, text]) => `<span>${kbds(keysOf(keys))} ${esc(text ?? KEYS[keys[0]].label)}</span>`).join("");
   input.value = prefix;
   input.focus();
   updatePalette();
@@ -712,7 +722,7 @@ function updatePalette() {
       if (!items.length) items.push({ kind: "path", text: q, icon: "link", title: "當作路徑開啟", sub: esc(q) });
     } else {
       for (const h of state.history)
-        if (h.exists) items.push({ kind: "hist", path: h.path, scroll: h.scroll, icon: "clock", title: esc(nameOf(h.path)), sub: esc(dirLabel(h.path) + " · " + ago(h.when)) });
+        if (h.exists) { const l = histLabels(h); items.push({ kind: "hist", path: h.path, scroll: h.scroll, icon: "clock", title: esc(l.name), sub: esc(l.dir + " · " + l.ago) }); }
     }
   }
   pal.items = items;
@@ -797,7 +807,7 @@ function stashTab() {
 // A new, empty tab right after the active one, made active.
 function insertTab() {
   stashTab();
-  state.tabs.splice(state.tab + 1, 0, { hist: [], at: -1 });
+  state.tabs.splice(state.tab + 1, 0, emptyTab());
   activateTab(state.tab + 1);
 }
 
@@ -839,7 +849,7 @@ function newTab() {
 
 function closeTab(i) {
   if (state.tabs.length === 1) {
-    state.tabs[0] = { hist: [], at: -1 };
+    state.tabs[0] = emptyTab();
     activateTab(0);
     showEmpty();
     return;
@@ -868,10 +878,10 @@ function renderTabs() {
   if (!many) return;
   strip.innerHTML = state.tabs.map((t, i) => {
     const rel = tabRel(t, i);
-    return `<div class="tab${i === state.tab ? " on" : ""}" data-i="${i}" title="${esc(rel ?? "新分頁")}" role="tab">` +
-      `${icon(fileIcon(rel ?? ""), "ico")}<span>${esc(rel ? baseName(rel) : "新分頁")}</span>` +
-      `<button class="x" data-close="${i}" title="關閉 (Ctrl+W)">${icon("close")}</button></div>`;
-  }).join("") + `<button class="tab-new" title="新分頁 (Ctrl+T)">${icon("plus")}</button>`;
+    return `<div class="tab${i === state.tab ? " on" : ""}" data-i="${i}" title="${esc(rel ?? KEYS.newTab.label)}" role="tab">` +
+      `${icon(fileIcon(rel ?? ""), "ico")}<span>${esc(rel ? baseName(rel) : KEYS.newTab.label)}</span>` +
+      `<button class="x" data-close="${i}" title="${esc(withKey("closeTab"))}">${icon("close")}</button></div>`;
+  }).join("") + `<button class="tab-new" title="${esc(withKey("newTab"))}">${icon("plus")}</button>`;
   strip.querySelector(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
@@ -885,7 +895,7 @@ function saveTabs() {
 function restoreTabs() {
   const saved = store.get("tabs:" + cfg.root, null);
   const list = saved?.list?.length ? saved.list : [""];
-  state.tabs = list.map((rel) => (rel ? { hist: [{ rel, scroll: 0 }], at: 0 } : { hist: [], at: -1 }));
+  state.tabs = list.map((rel) => (rel ? { hist: [{ rel, scroll: 0 }], at: 0 } : emptyTab()));
   activateTab(Math.min(Math.max(saved?.active ?? 0, 0), state.tabs.length - 1));
 }
 
@@ -939,39 +949,40 @@ async function renderMath(doc) {
 
 // ---------- help ----------
 
+// [keys, what they do]: keys are names in KEYS (shown as their keys) or plain text for mouse actions.
 const HELP = [
   ["開啟與搜尋", [
-    ["Ctrl+P", "快速開啟：輸入檔名、貼上路徑，或用 # 跳到本篇標題"],
-    ["Ctrl+Shift+F", "搜尋這個資料夾所有文件的內文"],
-    ["Ctrl+F", "在本篇中尋找（Enter / Shift+Enter 或 F3 切換）"],
-    ["Ctrl+H", `閱讀紀錄（最近 ${cfg.maxHistory} 個檔案，回到上次讀到的位置）`],
-    ["Ctrl+O · Ctrl+Shift+O", "開啟檔案 · 開啟資料夾"],
-    ["拖曳", "把檔案或資料夾拖到視窗上就打開"],
+    [["palette"], "快速開啟：輸入檔名、貼上路徑，或用 # 跳到本篇標題"],
+    [["searchText"], "搜尋這個資料夾所有文件的內文"],
+    [["find"], "在本篇中尋找（Enter / Shift+Enter 或 F3 切換）"],
+    [["history"], `閱讀紀錄（最近 ${cfg.maxHistory} 個檔案，回到上次讀到的位置）`],
+    [["openFile", "openFolder"], "開啟檔案 · 開啟資料夾"],
+    [["拖曳"], "把檔案或資料夾拖到視窗上就打開"],
   ]],
   ["分頁與瀏覽", [
-    ["Ctrl+T · Ctrl+W", "新分頁 · 關閉分頁（也可以用滑鼠中鍵點分頁）"],
-    ["Ctrl+Tab", "下一個分頁（加 Shift 是上一個）"],
-    ["Ctrl+點 · 中鍵", "在新分頁開啟連結或檔案；快速開啟裡用 Ctrl+Enter"],
-    ["Alt+← · Alt+→", "上一頁 · 下一頁（滑鼠側鍵也可以）"],
-    ["F5", "重新整理"],
+    [["newTab", "closeTab"], "新分頁 · 關閉分頁（也可以用滑鼠中鍵點分頁）"],
+    [["nextTab"], "下一個分頁（加 Shift 是上一個）"],
+    [["Ctrl+點", "中鍵"], "在新分頁開啟連結或檔案；快速開啟裡用 Ctrl+Enter"],
+    [["back", "forward"], "上一頁 · 下一頁（滑鼠側鍵也可以）"],
+    [["reload"], "重新整理"],
   ]],
   ["版面", [
-    ["Ctrl+B · Ctrl+J", "檔案側欄 · 本篇大綱"],
-    ["F11", "專注閱讀（隱藏所有面板；移到視窗邊緣會暫時滑出來）"],
-    ["Ctrl+= · Ctrl+- · Ctrl+0", "放大 · 縮小 · 恢復文字大小（也可以 Ctrl+滾輪）"],
-    ["Ctrl+D", "亮色 / 暗色切換；調色盤按鈕可以換主題"],
-    ["拖曳邊線", "調整側欄和大綱寬度，雙擊恢復"],
+    [["side", "toc"], "檔案側欄 · 本篇大綱"],
+    [["zen"], "專注閱讀（隱藏所有面板；移到視窗邊緣會暫時滑出來）"],
+    [["zoomIn", "zoomOut", "zoomReset"], "放大 · 縮小 · 恢復文字大小（也可以 Ctrl+滾輪）"],
+    [["dark"], "亮色 / 暗色切換；調色盤按鈕可以換主題"],
+    [["拖曳邊線"], "調整側欄和大綱寬度，雙擊恢復"],
   ]],
   ["文件裡", [
-    ["點圖片", "放大檢視：滾輪縮放、拖曳移動、← → 切換"],
-    ["程式碼右上角", "複製程式碼"],
-    ["標題左邊的 🔗", "複製「檔案路徑#標題」，貼回來會直接跳到那一節"],
-    ["更多選單", "匯出 PDF、複製檔案路徑、在檔案總管顯示"],
+    [["點圖片"], "放大檢視：滾輪縮放、拖曳移動、← → 切換"],
+    [["程式碼右上角"], "複製程式碼"],
+    [["標題左邊的 🔗"], "複製「檔案路徑#標題」，貼回來會直接跳到那一節"],
+    [["更多選單"], "匯出 PDF、複製檔案路徑、在檔案總管顯示"],
   ]],
   ["剪貼簿與背景", [
-    ["複製路徑", "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；路徑夾在一大段文字裡只提示，一次複製多個檔案會列出來讓你選。在「更多 → 剪貼簿設定」調整"],
-    ["✕ 關閉", "縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」"],
-    ["系統匣選單", "最近讀過的檔案、開機時在背景啟動"],
+    [["複製路徑"], "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；路徑夾在一大段文字裡只提示，一次複製多個檔案會列出來讓你選。在「更多 → 剪貼簿設定」調整"],
+    [["✕ 關閉"], "縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」"],
+    [["系統匣選單"], "最近讀過的檔案、開機時在背景啟動"],
   ]],
 ];
 
@@ -999,13 +1010,13 @@ for (const panel of document.querySelectorAll(".help")) {
 
 function openHelp() {
   $("help-body").innerHTML = HELP.map(([group, rows]) =>
-    `<section><h3>${group}</h3><dl>${rows.map(([k, v]) => `<dt>${k.split(" · ").map((x) => `<kbd>${esc(x)}</kbd>`).join(" ")}</dt><dd>${esc(v)}</dd>`).join("")}</dl></section>`).join("");
+    `<section><h3>${group}</h3><dl>${rows.map(([keys, text]) => `<dt>${kbds(keysOf(keys))}</dt><dd>${esc(text)}</dd>`).join("")}</dl></section>`).join("");
   openDialog("help");
 }
 
 function setClipMode(mode) {
   layout.clip = mode;
-  store.set("layout", layout);
+  saveLayout();
   post({ type: "clipMode", mode });
 }
 
@@ -1049,7 +1060,7 @@ function updateTextSearch() {
   if (!q.trim()) { renderPalette(); return; }
   renderPalette(`<li class="hint">搜尋中…</li>`);
   pal.timer = setTimeout(() => {
-    pal.searchId = String(Date.now());
+    pal.searchId = requestId();
     post({ type: "search", q, id: pal.searchId });
   }, 220);
 }
@@ -1393,6 +1404,9 @@ $("theme-menu").addEventListener("click", (e) => {
 
 // ---------- reading history ----------
 
+// A reading-history entry as lists show it: file name, where it lives, how long ago.
+const histLabels = (h) => ({ name: nameOf(h.path), dir: dirLabel(h.path), ago: ago(h.when) });
+
 function ago(when) {
   const min = Math.floor((Date.now() - when) / 60000);
   if (min < 1) return "剛剛";
@@ -1413,10 +1427,10 @@ function openHistoryMenu() {
   const menu = $("history-menu");
   const current = state.current && fullPath(state.current).toLowerCase();
   const rows = state.history.map((h, i) => {
-    const cur = h.path.toLowerCase() === current;
+    const cur = h.path.toLowerCase() === current, l = histLabels(h);
     return `<button data-hist="${i}" class="hist${cur ? " cur" : ""}"${h.exists ? "" : " disabled"} title="${esc(h.path)}">` +
-      `${icon(fileIcon(h.path))}<span class="hn"><span class="t">${esc(nameOf(h.path))}</span><span class="s">${esc(h.exists ? dirLabel(h.path) : "檔案已不存在")}</span></span>` +
-      `<span class="tail">${ago(h.when)}</span></button>`;
+      `${icon(fileIcon(h.path))}<span class="hn"><span class="t">${esc(l.name)}</span><span class="s">${esc(h.exists ? l.dir : "檔案已不存在")}</span></span>` +
+      `<span class="tail">${l.ago}</span></button>`;
   });
   menu.innerHTML = `<div class="label">最近讀過的檔案（最多 ${cfg.maxHistory} 個）</div>` +
     (rows.length ? rows.join("") + `<hr><button data-hist="clear">${icon("close")}<span>清除紀錄</span></button>` : `<div class="empty">還沒有讀過的檔案</div>`);
@@ -1436,15 +1450,15 @@ function openMoreMenu() {
   const item = (act, ic, label, kb = "", enabled = true) =>
     `<button data-act="${act}"${enabled ? "" : " disabled"}>${icon(ic)}<span>${label}</span>${kb ? `<span class="tail">${kb}</span>` : ""}</button>`;
   $("more-menu").innerHTML =
-    item("file", "file", "開啟檔案…", "Ctrl+O") +
-    item("folder", "folderOpen", "開啟資料夾…", "Ctrl+Shift+O") +
+    item("file", "file", "開啟檔案…", keyOf("openFile")) +
+    item("folder", "folderOpen", "開啟資料夾…", keyOf("openFolder")) +
     "<hr>" +
     item("copy", "copy", "複製檔案路徑", "", has) +
     item("reveal", "explorer", "在檔案總管顯示", "", has) +
     item("pdf", "file", "匯出 PDF…", "", has && !isImage(state.current)) +
     "<hr>" +
-    item("reload", "reload", "重新整理", "F5") +
-    item("help", "keyboard", "快捷鍵與功能", "?") +
+    item("reload", "reload", KEYS.reload.label, keyOf("reload")) +
+    item("help", "keyboard", KEYS.help.label, keyOf("help")) +
     `<div class="label">${esc(cfg.clipModesTitle)}</div>` +
     cfg.clipModes
       .map((m) => `<button data-clip="${m.id}">${icon("copy")}<span>${esc(m.label)}</span>${layout.clip === m.id ? `<span class="tail">${icon("check")}</span>` : ""}</button>`)
@@ -1496,7 +1510,7 @@ function showLightboxImage() {
   lb.viewer?.destroy();
   $("lightbox").innerHTML =
     `<div class="zoom-stage" id="lb-stage"><img alt=""></div>` +
-    `<button class="icon lb-close" title="關閉 (Esc)">${icon("close")}</button>` +
+    `<button class="icon lb-close" title="${esc(withKey("close"))}">${icon("close")}</button>` +
     (many ? `<button class="icon lb-prev" title="上一張 (←)">${icon("back")}</button><button class="icon lb-next" title="下一張 (→)">${icon("forward")}</button>` : "");
   const img = $("lightbox").querySelector("img");
   img.src = src;
@@ -1644,36 +1658,68 @@ function onClipboard(m) {
 
 function focusDoc() { frame.contentWindow?.focus(); }
 
+// ---------- keyboard shortcuts: the one table ----------
+
+// Every shortcut once: the keys (the first is the one shown), what it does, and when it only applies
+// sometimes. onKey matches keys against this table; the help panel, menus, quick-open hints and button
+// tooltips are written from it. run returning false means "not handled here" (Esc with nothing to close).
+const KEYS = {
+  palette: { keys: ["Ctrl+P", "Ctrl+K"], label: "快速開啟", run: () => openPalette() },
+  searchText: { keys: ["Ctrl+Shift+F"], label: "搜尋內文", run: () => openPalette("", "text") },
+  find: { keys: ["Ctrl+F"], label: "在本篇中尋找", run: () => openFind() },
+  findNext: { keys: ["F3", "Shift+F3"], label: "下一個、上一個符合處", when: () => !$("findbar").hidden, run: (e) => gotoFind(finder.i + (e.shiftKey ? -1 : 1)) },
+  findDown: { keys: ["Enter"], label: "下一個" }, // in the find box (its own handler); shown on its button
+  findUp: { keys: ["Shift+Enter"], label: "上一個" },
+  openInTab: { keys: ["Ctrl+Enter"], label: "在新分頁開啟" }, // in quick open (its own handler)
+  dark: { keys: ["Ctrl+D"], label: "亮色 / 暗色切換", run: () => toggleDark() },
+  history: { keys: ["Ctrl+H"], label: "閱讀紀錄", run: () => openHistoryMenu() },
+  newTab: { keys: ["Ctrl+T"], label: "新分頁", run: () => newTab() },
+  closeTab: { keys: ["Ctrl+W"], label: "關閉分頁", run: () => closeTab(state.tab) },
+  nextTab: { keys: ["Ctrl+Tab", "Ctrl+PageDown"], label: "下一個分頁", run: () => switchTab(state.tab + 1) },
+  prevTab: { keys: ["Ctrl+Shift+Tab", "Ctrl+PageUp"], label: "上一個分頁", run: () => switchTab(state.tab - 1) },
+  help: { keys: ["?", "F1"], label: "快捷鍵與功能", when: (e) => !e.target.closest?.("input, textarea"), run: () => openHelp() },
+  side: { keys: ["Ctrl+B"], label: "檔案側欄", run: () => toggleSide() },
+  toc: { keys: ["Ctrl+J"], label: "本篇大綱", run: () => toggleToc() },
+  openFile: { keys: ["Ctrl+O"], label: "開啟檔案", run: () => post({ type: "pickFile" }) },
+  openFolder: { keys: ["Ctrl+Shift+O"], label: "開啟資料夾", run: () => post({ type: "pickFolder" }) },
+  zoomIn: { keys: ["Ctrl+=", "Ctrl++"], label: "放大文字", run: () => zoomStep(1) },
+  zoomOut: { keys: ["Ctrl+-", "Ctrl+_"], label: "縮小文字", run: () => zoomStep(-1) },
+  zoomReset: { keys: ["Ctrl+0"], label: "恢復 100%", run: () => zoomStep(0) },
+  reload: { keys: ["F5", "Ctrl+R"], label: "重新整理", run: () => reloadAll() },
+  zen: { keys: ["F11"], label: "專注閱讀", run: () => toggleZen() },
+  back: { keys: ["Alt+←", "BrowserBack"], label: "上一頁", run: () => go(-1) },
+  forward: { keys: ["Alt+→", "BrowserForward"], label: "下一頁", run: () => go(1) },
+  close: {
+    keys: ["Esc"], label: "關閉",
+    run: () => closeMenus() || closeDialog() || (!$("findbar").hidden && (closeFind(), true)) || (layout.zen && (toggleZen(), true)),
+  },
+};
+
+// "Ctrl+Shift+F" -> what to compare with a keydown. Shift counts except for punctuation keys, which
+// Shift itself may produce ("+", "?", "_").
+function parseKeys(text) {
+  const parts = text.endsWith("++") ? [...text.slice(0, -2).split("+"), "+"] : text.split("+");
+  const key = parts.pop().toLowerCase();
+  const mods = new Set(parts.map((p) => p.toLowerCase()));
+  return { ctrl: mods.has("ctrl"), shift: mods.has("shift"), alt: mods.has("alt"), key: { "←": "arrowleft", "→": "arrowright", esc: "escape" }[key] ?? key };
+}
+for (const action of Object.values(KEYS)) action.combos = action.keys.map(parseKeys);
+
+const pressed = (c, e, key) => key === c.key && (e.ctrlKey || e.metaKey) === c.ctrl && e.altKey === c.alt
+  && (e.shiftKey === c.shift || (key.length === 1 && !/[a-z0-9]/.test(key)));
+
+const keyOf = (name) => KEYS[name].keys[0];
+const withKey = (name, label = KEYS[name].label) => `${label} (${keyOf(name)})`;
+const kbds = (keys) => keys.map((k) => `<kbd>${esc(k)}</kbd>`).join(" ");
+// Names in KEYS become their shown key; anything else is shown as written.
+const keysOf = (list) => list.map((k) => (KEYS[k] ? keyOf(k) : k));
+
 function onKey(e) {
-  const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
-  if (lightboxKey(e)) { /* handled by the lightbox */ }
-  else if (ctrl && !e.shiftKey && (k === "p" || k === "k")) openPalette();
-  else if (ctrl && e.shiftKey && k === "f") openPalette("", "text");
-  else if (ctrl && !e.shiftKey && k === "f") openFind();
-  else if (k === "f3" && !$("findbar").hidden) gotoFind(finder.i + (e.shiftKey ? -1 : 1));
-  else if (ctrl && !e.shiftKey && k === "d") toggleDark();
-  else if (ctrl && !e.shiftKey && k === "h") openHistoryMenu();
-  else if (ctrl && !e.shiftKey && k === "t") newTab();
-  else if (ctrl && !e.shiftKey && k === "w") closeTab(state.tab);
-  else if (ctrl && (k === "tab" || k === "pagedown" || k === "pageup"))
-    switchTab(state.tab + (e.shiftKey || k === "pageup" ? -1 : 1));
-  else if ((k === "?" || k === "f1") && !e.target.closest?.("input, textarea")) openHelp();
-  else if (ctrl && !e.shiftKey && k === "b") toggleSide();
-  else if (ctrl && !e.shiftKey && k === "j") toggleToc();
-  else if (ctrl && !e.shiftKey && k === "o") post({ type: "pickFile" });
-  else if (ctrl && e.shiftKey && k === "o") post({ type: "pickFolder" });
-  else if (ctrl && (k === "=" || k === "+")) zoomStep(1);
-  else if (ctrl && (k === "-" || k === "_")) zoomStep(-1);
-  else if (ctrl && k === "0") zoomStep(0);
-  else if (k === "f5" || (ctrl && k === "r")) reloadAll();
-  else if (k === "f11") toggleZen();
-  else if ((e.altKey && k === "arrowleft") || k === "browserback") go(-1);
-  else if ((e.altKey && k === "arrowright") || k === "browserforward") go(1);
-  else if (k === "escape" && closeMenus()) { /* closed a menu */ }
-  else if (k === "escape" && closeDialog()) { /* closed a panel */ }
-  else if (k === "escape" && !$("findbar").hidden) closeFind();
-  else if (k === "escape" && layout.zen) toggleZen();
-  else return;
+  if (!lightboxKey(e)) {
+    const key = e.key.toLowerCase();
+    const action = Object.values(KEYS).find((a) => a.run && a.combos.some((c) => pressed(c, e, key)) && (!a.when || a.when(e)));
+    if (!action || action.run(e) === false) return;
+  }
   e.preventDefault();
   e.stopPropagation();
 }
@@ -1711,7 +1757,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "clipPick": openPick(m.files, m.more); break;
     case "history": state.history = m.items; break;
     case "searchResults": onSearchResults(m); break;
-    case "clipMode": layout.clip = m.mode; store.set("layout", layout); break;
+    case "clipMode": layout.clip = m.mode; saveLayout(); break;
     case "clipOptions": Object.assign(clipOpts, { chars: m.chars, multi: m.multi, max: m.max }); showClipOptions(); break;
     case "openHistory": openHistory(m.path, m.scroll); break;
     case "exported": onExported(m); break;
@@ -1739,6 +1785,10 @@ setIcon("search-ico", "search");
 setIcon("find-prev", "up");
 setIcon("find-next", "down");
 setIcon("find-close", "close");
+
+// Buttons that stand for a shortcut say so in their tooltip, and key labels show the key, from KEYS.
+for (const el of document.querySelectorAll("[data-key]")) el.title = withKey(el.dataset.key);
+for (const el of document.querySelectorAll("kbd[data-keys]")) el.textContent = keyOf(el.dataset.keys);
 
 $("back").onclick = () => go(-1);
 $("forward").onclick = () => go(1);
