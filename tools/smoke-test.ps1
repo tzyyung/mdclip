@@ -2,8 +2,13 @@
 # (app\MdViewer.exe): page features through the debug port (tools\smoke.mjs), then the tray: close
 # button hides, a clipboard path brings it back, --exit quits.
 #   .\tools\smoke-test.ps1
+#   .\tools\smoke-test.ps1 -Only "heading link" -Repeat 20   # one page check, many times (intermittent failures)
 # A running viewer is closed first and reopened on the same file afterwards. The clipboard is saved
 # and restored; fixture entries are removed from the reading history.
+param(
+    [string]$Only,    # run only the page checks whose name contains this, and skip the tray checks
+    [int]$Repeat = 1  # run each page check this many times
+)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -Namespace Smoke -Name Win -MemberDefinition @'
@@ -65,8 +70,11 @@ foreach ($format in $clip.GetFormats($false)) { try { $saved.SetData($format, $c
 try {
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
     Start-Process $exe -ArgumentList "`"$(Join-Path $fixtures 'guide.md')`""
+    $env:SMOKE_ONLY = $Only
+    $env:SMOKE_REPEAT = $Repeat
     node (Join-Path $PSScriptRoot 'smoke.mjs') 9333 $fixtures
     if ($LASTEXITCODE -ne 0) { $failed++ }
+    if ($Only) { return } # straight to the clean-up below
 
     Write-Host ''
     $window = Get-MainWindow
@@ -84,7 +92,7 @@ try {
     Report '--exit quits' (-not (Get-Viewer))
 }
 finally {
-    Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
+    Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, Env:SMOKE_ONLY, Env:SMOKE_REPEAT -ErrorAction SilentlyContinue
     if (Get-Viewer) { Stop-Viewer }
     [Windows.Forms.Clipboard]::SetDataObject($saved, $true)
     # keep the fixtures out of the user's reading history and remembered folders

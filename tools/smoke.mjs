@@ -2,6 +2,8 @@
 // PASS/FAIL per check. Run by smoke-test.ps1, which starts the viewer, guards the clipboard and
 // checks the tray behaviour afterwards.
 //   node smoke.mjs <port> <fixtures folder>
+// SMOKE_ONLY=<text> runs only the checks whose name contains it (opening the start file always runs);
+// SMOKE_REPEAT=<n> runs each check n times.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
@@ -56,14 +58,20 @@ const getClipboard = () => ps("Get-Clipboard -Raw");
 // ---------- checks ----------
 
 const results = [];
+const only = process.env.SMOKE_ONLY ?? "", repeat = Math.max(1, Number(process.env.SMOKE_REPEAT) || 1);
 async function check(name, fn) {
-  try {
-    const detail = await fn();
-    results.push(true);
-    console.log(`PASS  ${name}${detail ? "  (" + detail + ")" : ""}`);
-  } catch (err) {
-    results.push(false);
-    console.log(`FAIL  ${name}  ${err.message}`);
+  const setup = results.length === 0; // the first check opens the start file the others rely on
+  if (only && !setup && !name.includes(only)) return;
+  for (let i = 1; i <= (setup ? 1 : repeat); i++) {
+    const label = repeat > 1 && !setup ? `${name} #${i}` : name;
+    try {
+      const detail = await fn();
+      results.push(true);
+      console.log(`PASS  ${label}${detail ? "  (" + detail + ")" : ""}`);
+    } catch (err) {
+      results.push(false);
+      console.log(`FAIL  ${label}  ${err.message}`);
+    }
   }
 }
 const expect = (cond, msg) => { if (!cond) throw new Error(msg); };
