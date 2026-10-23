@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Unit tests for the parts that need no window: PathFinder, SafePath, TextFiles. The source files
-       are compiled in directly, so the tests do not need the WinForms / WebView2 app. -->
+  <!-- Unit tests for MdViewer.Core, the part that needs no window. -->
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
@@ -10,9 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\MdViewer\PathFinder.cs" Link="PathFinder.cs" />
-    <Compile Include="..\MdViewer\SafePath.cs" Link="SafePath.cs" />
-    <Compile Include="..\MdViewer\TextFiles.cs" Link="TextFiles.cs" />
+    <ProjectReference Include="..\MdViewer.Core\MdViewer.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

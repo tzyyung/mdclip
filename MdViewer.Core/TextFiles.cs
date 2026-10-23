@@ -4,7 +4,7 @@ using System.Text;
 namespace MdViewer;
 
 // Reading the files we show and search, in one place.
-static class TextFiles
+public static class TextFiles
 {
     static readonly UTF8Encoding StrictUtf8 = new(false, throwOnInvalidBytes: true);
     static readonly Lazy<Encoding> Legacy = new(LegacyEncoding);

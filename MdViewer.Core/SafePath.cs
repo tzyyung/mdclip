@@ -6,7 +6,7 @@ namespace MdViewer;
 // network share whose server is off makes a plain File.Exists wait about 25 s, which on the window's
 // thread freezes the viewer. Here a share gets 0.5 s to answer; if it does not, it counts as unreachable
 // for a minute while it is asked again in the background. Local disks are checked directly.
-static class SafePath
+public static class SafePath
 {
     static readonly TimeSpan Wait = TimeSpan.FromMilliseconds(500), RememberUp = TimeSpan.FromSeconds(30), RememberDown = TimeSpan.FromMinutes(1);
     static readonly ConcurrentDictionary<string, (bool Up, DateTime Until)> shares = new(StringComparer.OrdinalIgnoreCase);

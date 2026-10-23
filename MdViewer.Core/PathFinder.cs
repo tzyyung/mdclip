@@ -6,33 +6,25 @@ namespace MdViewer;
 // a path relative to the root, a file:// URL, a path with spaces inside a sentence, or just a file name /
 // path tail matched against the files under the root and the folders opened before. Free of UI and
 // settings so the rules can be tested on their own (MdViewer.Tests).
-sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnlyList<string> recentDirs)
+public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnlyList<string> recentDirs)
 {
     // Path-looking tokens ending in a listed extension, e.g. E:\docs\b.md, docs/x.png, ./y.md:12.
     // The extension ends at anything but an ASCII word character, not at \b: CJK counts as a word
     // character, so "setup.md這份" would not end there. At most 260 characters (the usual Windows path
     // limit): unbounded, a long run of text without spaces would be scanned again from every position.
+    static readonly string Listed = Paths.Alternation(Paths.MarkdownExtensions.Concat(Paths.ImageExtensions));
     static readonly Regex PathToken = new(
-        @"(?:[A-Za-z]:[\\/]|\\\\)?[^\s""'<>|*?()\[\]`]{0,260}?\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)(?![A-Za-z0-9_])",
+        @"(?:[A-Za-z]:[\\/]|\\\\)?[^\s""'<>|*?()\[\]`]{0,260}?\.(?:" + Listed + ")(?![A-Za-z0-9_])",
         RegexOptions.IgnoreCase);
     // A listed extension at the end of a word; paths with spaces are found by trying starts to its left.
-    static readonly Regex ExtensionEnd = new(@"\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)(?![A-Za-z0-9_])", RegexOptions.IgnoreCase);
+    static readonly Regex ExtensionEnd = new(@"\.(?:" + Listed + ")(?![A-Za-z0-9_])", RegexOptions.IgnoreCase);
     // "E:\docs\a.md#some-heading", anywhere in the text: a file plus the heading to jump to (what the
     // heading link button copies). The heading ends at whitespace, quotes, brackets or CJK punctuation.
-    static readonly Regex WithFragment = new(@"\.(?:md|markdown)(?<frag>#[^\s#""'<>()\[\]。，、；：！？」』）]+)", RegexOptions.IgnoreCase);
+    static readonly Regex WithFragment = new(@"\.(?:" + Paths.Alternation(Paths.MarkdownExtensions) + @")(?<frag>#[^\s#""'<>()\[\]。，、；：！？」』）]+)", RegexOptions.IgnoreCase);
 
     // Absolute folders seen by the last Find (folders themselves, or the folders of files), for the
     // caller to remember so a later copy of just a file name can be matched against them.
     public List<string> SeenDirs { get; } = [];
-
-    public static bool IsMarkdown(string path) =>
-        Path.GetExtension(path).ToLowerInvariant() is ".md" or ".markdown";
-
-    public static bool IsImage(string path) =>
-        Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif" or ".svg" or ".webp" or ".bmp";
-
-    // What the tree lists and the watcher cares about.
-    public static bool IsListed(string path) => IsMarkdown(path) || IsImage(path);
 
     // The text without the "#heading" part (so the path can be found as usual), and that part.
     public static (string Text, string? Hash) SplitFragment(string text) =>
@@ -70,7 +62,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     }
 
     // A markdown or image file the text names.
-    string? LocateFile(string text) => Locate(text) is { IsDirectory: false } e && IsListed(e.Path) ? e.Path : null;
+    string? LocateFile(string text) => Locate(text) is { IsDirectory: false } e && Paths.IsListed(e.Path) ? e.Path : null;
 
     static string Unquote(string text) => text.Trim().Trim('"', '\'', '`');
 
@@ -97,7 +89,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
         foreach (var candidate in candidates)
         {
             var tail = Tail(candidate);
-            if (tail.Length == 0 || tail.Any(char.IsWhiteSpace) || !IsListed(tail)) continue;
+            if (tail.Length == 0 || tail.Any(char.IsWhiteSpace) || !Paths.IsListed(tail)) continue;
             var hits = NameMatches(tail);
             if (hits.Count == 1) return (null, hits, candidate);
             if (FindInRecentDirs(tail) is { } recent) return (recent, [], candidate);
@@ -148,7 +140,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
         {
             var tail = Tail(stretch);
             if (tail.Length == 0) continue;
-            if (NameMatches(tail) is [var only]) return new(Path.GetFullPath(Path.Combine(root, only.Replace('/', '\\'))), stretch);
+            if (NameMatches(tail) is [var only]) return new(Paths.FromRel(root, only), stretch);
             if (FindInRecentDirs(tail) is { } recent) return new(recent, stretch);
         }
         return null;
@@ -235,7 +227,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
         foreach (var candidate in candidates)
         {
             if (!Path.IsPathFullyQualified(Unquote(candidate)) || Locate(candidate) is not { } entry) continue;
-            var dir = entry.IsDirectory ? entry.Path : IsListed(entry.Path) ? Path.GetDirectoryName(entry.Path)! : null;
+            var dir = entry.IsDirectory ? entry.Path : Paths.IsListed(entry.Path) ? Path.GetDirectoryName(entry.Path)! : null;
             if (dir is not null && !SeenDirs.Contains(dir, StringComparer.OrdinalIgnoreCase)) SeenDirs.Add(dir);
         }
     }
@@ -269,7 +261,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
             try
             {
                 foreach (var file in Directory.EnumerateFiles(dir))
-                    if (IsListed(file)) names.TryAdd(Path.GetFileName(file), file);
+                    if (Paths.IsListed(file)) names.TryAdd(Path.GetFileName(file), file);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
         }

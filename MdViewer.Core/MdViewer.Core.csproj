@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- What MdViewer does without a window: turning copied text into files, paths and file kinds,
+       existence checks that do not hang on dead network shares, reading text files, the settings file.
+       Shared by the app and by MdViewer.Tests. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MdViewer</RootNamespace>
+  </PropertyGroup>
+
+</Project>

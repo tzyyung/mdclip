@@ -14,7 +14,8 @@ sealed record Theme(string Id, string Name, bool Dark, string Vars)
 static class Themes
 {
     public const string Auto = "auto";
-    const string DefaultLight = "colorful-light", DefaultDark = "colorful-dark";
+    // The pair "auto" switches between with Windows' light/dark setting (the web page is told these too).
+    public const string AutoLight = "colorful-light", AutoDark = "colorful-dark";
 
     public static readonly Theme[] All =
     [
@@ -107,117 +108,15 @@ static class Themes
     public static Theme Find(string id) => All.FirstOrDefault(t => t.Id == id) ?? All[0];
 
     // "auto" follows Windows' app light/dark setting.
-    public static Theme Resolve(string id) => id == Auto ? Find(SystemIsDark() ? DefaultDark : DefaultLight) : Find(id);
+    public static Theme Resolve(string id) => id == Auto ? Find(SystemIsDark() ? AutoDark : AutoLight) : Find(id);
 
-    public static string Css => string.Join("\n", All.Select(t =>
+    // Every theme's variables, for the app page and every document; built once.
+    public static readonly string Css = string.Join("\n", All.Select(t =>
         $":root[data-theme=\"{t.Id}\"] {{ color-scheme: {(t.Dark ? "dark" : "light")}; {t.Vars} }}"));
 
     public static bool SystemIsDark()
     {
         using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
         return key?.GetValue("AppsUseLightTheme") is int v && v == 0;
-    }
-}
-
-// Remembers the chosen theme, the last light and dark picks (for the light/dark toggle), the last root folder
-// and the folders of recently opened files (most recent first; used to find copied bare file names).
-sealed class ThemeSettings
-{
-    static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MdViewer", "theme.txt");
-
-    const int MaxDirs = 200;
-    public const int MaxHistory = 30;
-
-    public string Theme = Themes.Auto, LastLight = "colorful-light", LastDark = "github-dark", Root = "";
-    public List<string> Dirs = [];
-    public string Clip = "auto";      // clipboard paths: auto (open), hint, off
-    public int ClipChars = 30;        // auto-open only when at most this many other characters were copied with the path
-    public string ClipMulti = "list"; // several files copied: list (let me pick) or first (open it, say there are more)
-    public int ClipMax = 5;           // at most this many files in that list
-    public bool TrayHintShown;        // the "still running in the tray" notice was shown once
-    public List<HistoryEntry> History = []; // most recently read first
-
-    public static ThemeSettings Load()
-    {
-        var s = new ThemeSettings();
-        try
-        {
-            foreach (var line in File.ReadAllLines(FilePath))
-            {
-                var (key, value) = (line.Split('=', 2)[0], line.Split('=', 2).ElementAtOrDefault(1) ?? "");
-                if (key == "theme") s.Theme = value;
-                else if (key == "light") s.LastLight = value;
-                else if (key == "dark") s.LastDark = value;
-                else if (key == "root") s.Root = value;
-                else if (key == "clip" && value is "auto" or "hint" or "off") s.Clip = value;
-                else if (key == "clipchars" && int.TryParse(value, out var chars) && chars >= 0) s.ClipChars = chars;
-                else if (key == "clipmulti" && value is "list" or "first") s.ClipMulti = value;
-                else if (key == "clipmax" && int.TryParse(value, out var max) && max is >= 2 and <= 50) s.ClipMax = max;
-                else if (key == "trayhint") s.TrayHintShown = value == "1";
-                else if (key == "dir" && value.Length > 0) s.Dirs.Add(value);
-                else if (key == "hist" && HistoryEntry.Parse(value) is { } h) s.History.Add(h);
-            }
-        }
-        catch (IOException) { }
-        return s;
-    }
-
-    public void Save()
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            // Written beside it and then swapped in, so a crash or power cut mid-write leaves the old file
-            // whole instead of a cut-off one that loses the history and remembered folders.
-            var temp = FilePath + ".tmp";
-            File.WriteAllLines(temp,
-                [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", $"clip={Clip}", $"clipchars={ClipChars}", $"clipmulti={ClipMulti}", $"clipmax={ClipMax}", $"trayhint={(TrayHintShown ? 1 : 0)}", .. Dirs.Select(d => $"dir={d}"), .. History.Select(h => $"hist={h}")]);
-            File.Move(temp, FilePath, overwrite: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-    }
-
-    // Each folder is stored once (case-insensitive, trailing separator ignored); re-adding moves it to the front.
-    public void RememberDir(string dir)
-    {
-        try { dir = Path.GetFullPath(dir).TrimEnd('\\'); }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { return; }
-        if (dir.Length == 0 || (Dirs.Count > 0 && Dirs[0].Equals(dir, StringComparison.OrdinalIgnoreCase))) return;
-        Dirs.RemoveAll(d => d.Equals(dir, StringComparison.OrdinalIgnoreCase));
-        Dirs.Insert(0, dir);
-        if (Dirs.Count > MaxDirs) Dirs.RemoveRange(MaxDirs, Dirs.Count - MaxDirs);
-        Save();
-    }
-
-    // Each file is stored once; reading it again moves it to the front.
-    public void RememberFile(string path)
-    {
-        var scroll = History.Find(h => h.Path.Equals(path, StringComparison.OrdinalIgnoreCase))?.Scroll ?? 0;
-        History.RemoveAll(h => h.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
-        History.Insert(0, new HistoryEntry(path, DateTime.Now, scroll));
-        if (History.Count > MaxHistory) History.RemoveRange(MaxHistory, History.Count - MaxHistory);
-        Save();
-    }
-
-    public void ClearHistory()
-    {
-        History.Clear();
-        Save();
-    }
-}
-
-// Scroll is the last reading position in pixels. Stored as "when|scroll|path"; older "when|path" lines still load.
-sealed record HistoryEntry(string Path, DateTime When, int Scroll = 0)
-{
-    public override string ToString() => $"{When:yyyy-MM-ddTHH:mm:ss}|{Scroll}|{Path}";
-
-    public static HistoryEntry? Parse(string value)
-    {
-        var parts = value.Split('|', 3);
-        if (parts.Length < 2 || !DateTime.TryParse(parts[0], out var when)) return null;
-        if (parts.Length == 3 && int.TryParse(parts[1], out var scroll))
-            return parts[2].Length > 0 ? new HistoryEntry(parts[2], when, scroll) : null;
-        return parts[1].Length > 0 ? new HistoryEntry(parts[1], when) : null;
     }
 }

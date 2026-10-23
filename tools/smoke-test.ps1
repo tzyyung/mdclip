@@ -78,6 +78,7 @@ try {
 
     Write-Host ''
     $window = Get-MainWindow
+    if (-not $window) { Report 'viewer window found' $false; return } # straight to the clean-up below
     [void][Smoke.Win]::PostMessage($window, 0x0112, [IntPtr]0xF060, [IntPtr]::Zero) # SC_CLOSE, as the X button sends
     Start-Sleep 4
     Report 'close button hides to the tray' ((Get-Viewer) -and -not [Smoke.Win]::IsWindowVisible($window))

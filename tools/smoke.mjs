@@ -325,6 +325,13 @@ await check("scripts inside documents never run", async () => {
   await sleep(500);
   const title = await js("document.title");
   expect(!title.includes("PWNED"), "title: " + title);
+  // Files under the root that are shown as they are: an HTML page and an SVG picture with scripts.
+  for (const file of ["evil.html", "pics/evil.svg"]) {
+    await js(`frame.contentWindow.location.replace("/" + ${JSON.stringify(rel(file))})`);
+    await sleep(700);
+    const after = await js("document.title");
+    expect(!after.includes("PWNED"), `${file} ran its script: ${after}`);
+  }
 });
 
 await open("guide.md");

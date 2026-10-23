@@ -4,3 +4,4 @@ app/
 .vs/
 *.user
 dist/
+.codegraph/

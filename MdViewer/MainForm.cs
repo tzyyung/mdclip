@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Net;
@@ -15,6 +16,7 @@ using Markdig.Syntax;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
+using static MdViewer.Paths;
 using static MdViewer.PathFinder;
 
 namespace MdViewer;
@@ -38,6 +40,10 @@ sealed class MainForm : Form
         .UseAdvancedExtensions()
         .UseYamlFrontMatter() // parsed out of the body; shown as a collapsible "文件資訊" box instead
         .Build();
+    // Embedded files (the web UI and its libraries, the icon), read once (declared first: other static fields, like the icon, use it); the text ones also decoded once.
+    static readonly ConcurrentDictionary<string, byte[]?> resources = new();
+    static readonly ConcurrentDictionary<string, string> resourceTexts = new();
+
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
         { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
@@ -52,7 +58,7 @@ sealed class MainForm : Form
     int startScroll; // reading position for the document the next page load opens (a tray "最近讀過" pick)
     string exportHtml = ""; // the page being turned into a PDF, served at __export
     // Text of each searched file, reused while its modification time is unchanged.
-    readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Written, string[] Lines)> searchCache = new(StringComparer.OrdinalIgnoreCase);
+    readonly ConcurrentDictionary<string, (DateTime Written, string[] Lines)> searchCache = new(StringComparer.OrdinalIgnoreCase);
     readonly FileSystemWatcher watcher = new()
     {
         IncludeSubdirectories = true,
@@ -60,7 +66,7 @@ sealed class MainForm : Form
     };
     readonly System.Windows.Forms.Timer debounce = new() { Interval = 300 };
     readonly HashSet<string> changedFiles = new(StringComparer.OrdinalIgnoreCase);
-    readonly ThemeSettings settings = ThemeSettings.Load();
+    readonly Settings settings = Settings.Load();
 
     Theme theme;
     string root = "";
@@ -69,7 +75,7 @@ sealed class MainForm : Form
     uint lastClipboardSeq;
     int clipboardReadAttempts;
     List<string> knownFiles = []; // relative paths from the last tree scan, for file-name lookups
-    readonly System.Windows.Forms.Timer saveDelay = new() { Interval = 1000 }; // batches reading-position saves
+    readonly System.Windows.Forms.Timer saveDelay = new() { Interval = 1000 }; // batches settings writes, see SaveSettingsSoon
     bool systemDark = Themes.SystemIsDark();
 
     // startHidden: launched at sign-in; stay in the tray until something needs the window.
@@ -85,18 +91,13 @@ sealed class MainForm : Form
 
         watcher.Changed += OnFsEvent;
         // Too many changes at once for Windows to report them all: some were lost, so refresh everything.
-        watcher.Error += (_, _) => BeginInvoke(() =>
-        {
-            treeDirty = true;
-            if (lastOpened is { } open) changedFiles.Add(open);
-            debounce.Stop();
-            debounce.Start();
-        });
+        watcher.Error += (_, _) => BeginInvoke(() => QueueRefresh(tree: true, lastOpened));
         watcher.Created += OnFsEvent;
         watcher.Deleted += OnFsEvent;
         watcher.Renamed += OnFsEvent;
         clipboardDelay.Tick += (_, _) => ReadClipboard();
-        saveDelay.Tick += (_, _) => { saveDelay.Stop(); settings.Save(); };
+        settings.Changed += SaveSettingsSoon;
+        saveDelay.Tick += (_, _) => FlushSettings();
         FormClosing += OnFormClosing;
         VisibleChanged += (_, _) => { if (Visible && web is null) _ = StartWebViewAsync(); };
         SystemEvents.UserPreferenceChanged += OnSystemPreference;
@@ -104,7 +105,12 @@ sealed class MainForm : Form
         debounce.Tick += (_, _) =>
         {
             debounce.Stop();
-            if (treeDirty) { treeDirty = false; Post(new { type = "tree" }); }
+            if (treeDirty)
+            {
+                treeDirty = false;
+                Post(new { type = "tree" });
+                Post(new { type = "history", items = HistoryItems(recheck: true) }); // files may have gone
+            }
             foreach (var path in changedFiles) Post(new { type = "changed", rel = ToRel(path) });
             changedFiles.Clear();
         };
@@ -115,11 +121,7 @@ sealed class MainForm : Form
 
     internal static readonly Icon AppIcon = LoadAppIcon();
 
-    static Icon LoadAppIcon()
-    {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("app.ico")!;
-        return new Icon(stream);
-    }
+    static Icon LoadAppIcon() => new(new MemoryStream(ResourceBytes("app.ico")!));
 
     // Returns the file to open first: the start path if it is a file; with no start path, the last
     // file read if it is still there under the last root (so a restart comes back to the same page).
@@ -226,8 +228,8 @@ sealed class MainForm : Form
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("開啟 MdViewer", null, (_, _) => ShowFromTray(activate: true));
         open.Font = new Font(open.Font, FontStyle.Bold);
-        var clip = new ToolStripMenuItem("剪貼簿有 .md 或圖片路徑時");
-        foreach (var (mode, label) in new[] { ("auto", "自動開啟"), ("hint", "只提示"), ("off", "不理會") })
+        var clip = new ToolStripMenuItem(Settings.ClipModesTitle);
+        foreach (var (mode, label) in Settings.ClipModes)
             clip.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetClipMode(mode)) { Tag = mode });
         var autostart = new ToolStripMenuItem("開機時在背景啟動", null, (_, _) => SetAutostart(!IsAutostart()));
         var exit = new ToolStripMenuItem("結束", null, (_, _) => ExitApp());
@@ -236,7 +238,7 @@ sealed class MainForm : Form
         menu.Opening += (_, _) =>
         {
             recent.DropDownItems.Clear();
-            foreach (var h in settings.History.Where(h => SafePath.FileExists(h.Path)).Take(15))
+            foreach (var h in settings.History.Where(h => HistoryFileExists(h.Path)).Take(15))
             {
                 var folder = Path.GetFileName(Path.GetDirectoryName(h.Path));
                 recent.DropDownItems.Add(new ToolStripMenuItem(Path.GetFileName(h.Path), null, (_, _) => OpenRecent(h))
@@ -270,20 +272,35 @@ sealed class MainForm : Form
             HideToTray();
             return;
         }
-        if (saveDelay.Enabled) settings.Save();
+        FlushSettings();
         tray.Visible = false;
     }
 
     void HideToTray()
     {
-        if (saveDelay.Enabled) { saveDelay.Stop(); settings.Save(); }
         Hide();
         ReleaseWebView();
-        if (settings.TrayHintShown) return;
+        var firstTime = !settings.TrayHintShown;
         settings.TrayHintShown = true;
+        FlushSettings(); // hidden for possibly hours, and signing out may be next
+        if (firstTime)
+            tray.ShowBalloonTip(8000, "MdViewer 還在背景執行",
+                "複製 .md 或圖片路徑時會自動開啟。要結束程式，請在這個圖示按右鍵 →「結束」。", ToolTipIcon.Info);
+    }
+
+    // Settings are written once their changes pause for a second (one page turn or copy changes several
+    // things); hiding, quitting and signing out write at once.
+    void SaveSettingsSoon()
+    {
+        saveDelay.Stop();
+        saveDelay.Start();
+    }
+
+    void FlushSettings()
+    {
+        if (!saveDelay.Enabled) return;
+        saveDelay.Stop();
         settings.Save();
-        tray.ShowBalloonTip(8000, "MdViewer 還在背景執行",
-            "複製 .md 或圖片路徑時會自動開啟。要結束程式，請在這個圖示按右鍵 →「結束」。", ToolTipIcon.Info);
     }
 
     // activate: false when a clipboard copy brings the window back, so typing stays in the app the user is in.
@@ -345,9 +362,7 @@ sealed class MainForm : Form
 
     void SetClipMode(string mode)
     {
-        settings.Clip = mode;
-        settings.Save();
-        Post(new { type = "clipMode", mode });
+        if (settings.SetClip(mode)) Post(new { type = "clipMode", mode });
     }
 
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -392,10 +407,7 @@ sealed class MainForm : Form
     void OpenFromOtherInstance(string? path)
     {
         if (path == Program.ExitRequest) { ExitApp(); return; }
-        if (string.IsNullOrEmpty(path)) { }
-        else if (SafePath.DirectoryExists(path)) SetRoot(path);
-        else if (SafePath.FileExists(path) && web is null) lastOpened = path; // the page about to load opens it
-        else if (SafePath.FileExists(path) && OpenPath(path) is { } rel) PostWhenReady(new { type = "open", rel });
+        if (!string.IsNullOrEmpty(path)) OpenAny(path);
         ShowFromTray(activate: true);
     }
 
@@ -408,19 +420,20 @@ sealed class MainForm : Form
         watcher.Path = root;
         watcher.EnableRaisingEvents = true;
         settings.Root = root;
-        settings.Save();
         if (lastOpened is not null && !IsUnder(lastOpened, root)) lastOpened = null;
         Post(new { type = "root", root, name = RootName });
-        if (web is null) ScanKnownFiles(); // no page to ask for the tree, but clipboard lookups need it
+        if (web is null) _ = ScanTree(); // no page to ask for the tree, but clipboard lookups need the file list
     }
 
-    void ScanKnownFiles()
+    // The tree of the root, off the UI thread; its file list is kept for file-name lookups and search.
+    Task<List<TreeItem>> ScanTree()
     {
         var r = root;
-        Task.Run(() =>
+        return Task.Run(() =>
         {
-            var files = Flatten(BuildChildren(new DirectoryInfo(r), r) ?? []).ToList();
-            if (r == root) knownFiles = files;
+            var tree = BuildChildren(new DirectoryInfo(r), r) ?? [];
+            if (r == root) knownFiles = Flatten(tree).ToList();
+            return tree;
         });
     }
 
@@ -434,36 +447,45 @@ sealed class MainForm : Form
         return Path.GetDirectoryName(file)!;
     }
 
-    string ToRel(string path) => Path.GetRelativePath(root, path).Replace('\\', '/');
+    string ToRel(string path) => Paths.ToRel(root, path);
 
-    string? FromRel(string rel)
+    // Only paths inside the root: the page cannot reach out of it.
+    string? FromRel(string rel) => Paths.FromRel(root, rel) is var full && IsUnder(full, root) ? full : null;
+
+    // The page opens a file under the root itself; anything else it asks the host to open (null).
+    string? RelIfUnder(string path) => IsUnder(path, root) ? ToRel(path) : null;
+
+    // Runs the clipboard and quick-open rules (see PathFinder), then remembers the folders named in the
+    // text for later copies of just a file name.
+    T Find<T>(Func<PathFinder, T> use)
     {
-        var full = Path.GetFullPath(Path.Combine(root, rel.Replace('/', '\\')));
-        return IsUnder(full, root) ? full : null;
-    }
-
-    static bool IsUnder(string path, string dir) =>
-        path.StartsWith(dir.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
-
-    // The clipboard and quick-open rules for turning text into a file (see PathFinder).
-    PathFinder Finder() => new(root, knownFiles, settings.Dirs);
-
-    string? ResolveInput(string text) => Finder().Resolve(text);
-
-    // Also remembers the absolute folders in the text, for later copies of just a file name.
-    (string? Path, List<string> Matches) FindPathIn(string text)
-    {
-        var finder = Finder();
-        var found = finder.Find(text);
+        var finder = new PathFinder(root, knownFiles, settings.Dirs);
+        var result = use(finder);
         foreach (var dir in finder.SeenDirs) settings.RememberDir(dir);
-        return found;
+        return result;
     }
 
-    // Opens a file (switching root if it lives elsewhere) and returns its relative path,
-    // or switches root and returns null for a folder.
+    // Shows what a path names, however it arrived (another launch, a drop, the file dialog): a folder becomes
+    // the root, a file opens.
+    void OpenAny(string path)
+    {
+        if (SafePath.DirectoryExists(path)) SetRoot(path);
+        else if (!SafePath.FileExists(path)) return;
+        else if (web is null) lastOpened = path; // the page about to load opens it
+        else PostWhenReady(new { type = "open", rel = OpenFile(path) });
+    }
+
+    // For a path the page asked for: a folder becomes the root (null), a file is opened by the page.
     string? OpenPath(string path)
     {
-        if (SafePath.DirectoryExists(path)) { SetRoot(path); return null; }
+        if (!SafePath.DirectoryExists(path)) return OpenFile(path);
+        SetRoot(path);
+        return null;
+    }
+
+    // The file's path relative to the root, switching to the file's own root first when it lives elsewhere.
+    string OpenFile(string path)
+    {
         if (!IsUnder(path, root)) SetRoot(FindRoot(path));
         return ToRel(path);
     }
@@ -488,36 +510,31 @@ sealed class MainForm : Form
                 GiveFocusBack();
                 returnFocusTo = IntPtr.Zero;
                 break;
-            case "clipMode":
-                if (Str("mode") is "auto" or "hint" or "off") { settings.Clip = Str("mode"); settings.Save(); }
-                break;
+            case "clipMode": settings.SetClip(Str("mode")); break;
             case "clipList": // "open the first" opened one; now list them all
-                if (clipText is { } listed && Finder().Analyze(listed, int.MaxValue, settings.ClipMax) is { Files.Count: > 0 } offer)
+                if (clipText is { } listed && Find(f => f.Analyze(listed, int.MaxValue, settings.ClipMax)) is { Files.Count: > 0 } offer)
                     Post(new { type = "clipPick", files = FileItems(offer.Files), more = offer.More });
                 break;
             case "clipOptions":
-                if (msg.TryGetProperty("chars", out var c) && c.TryGetInt32(out var chars) && chars >= 0) settings.ClipChars = chars;
-                if (msg.TryGetProperty("max", out var m) && m.TryGetInt32(out var max) && max is >= 2 and <= 50) settings.ClipMax = max;
-                if (Str("multi") is "list" or "first") settings.ClipMulti = Str("multi");
-                settings.Save();
+                // The page sends what was typed; Settings keeps what is valid, and the page shows what was kept.
+                if (msg.TryGetProperty("chars", out var c) && c.TryGetInt32(out var chars)) settings.SetClipChars(chars);
+                if (msg.TryGetProperty("max", out var m) && m.TryGetInt32(out var max)) settings.SetClipMax(max);
+                settings.SetClipMulti(Str("multi"));
+                Post(new { type = "clipOptions", chars = settings.ClipChars, multi = settings.ClipMulti, max = settings.ClipMax });
                 break;
             case "opened":
                 if (FromRel(Str("rel")) is { } opened && SafePath.FileExists(opened)) // not for a "not found" page
                 {
                     lastOpened = opened;
+                    historyExists[opened] = true;
                     settings.RememberDir(Path.GetDirectoryName(opened)!);
                     settings.RememberFile(opened);
                     Post(new { type = "history", items = HistoryItems() });
                 }
                 break;
             case "scroll":
-                if (FromRel(Str("rel")) is { } read
-                    && settings.History.FindIndex(h => h.Path.Equals(read, StringComparison.OrdinalIgnoreCase)) is >= 0 and var at)
-                {
-                    settings.History[at] = settings.History[at] with { Scroll = msg.TryGetProperty("y", out var y) && y.TryGetInt32(out var px) ? px : 0 };
-                    saveDelay.Stop();
-                    saveDelay.Start();
-                }
+                if (FromRel(Str("rel")) is { } read && msg.TryGetProperty("y", out var y) && y.TryGetInt32(out var px))
+                    settings.SetScroll(read, px);
                 break;
             case "search": Search(Str("q"), Str("id")); break;
             case "clearHistory":
@@ -526,7 +543,7 @@ sealed class MainForm : Form
                 break;
             case "resolve":
                 var (text, hash) = SplitFragment(Str("text"));
-                var (found, matches) = ResolveInput(text) is { } direct ? (direct, []) : FindPathIn(text);
+                var (found, matches) = Find(f => f.Resolve(text) is { } direct ? (direct, []) : f.Find(text));
                 if (found is null && matches.Count == 1) found = FromRel(matches[0]);
                 if (found is not null) Post(new { type = "resolved", id = Str("id"), rel = OpenPath(found), hash });
                 else Post(new
@@ -564,12 +581,11 @@ sealed class MainForm : Form
         catch (ExternalException ex) { Program.LogError(ex); }
     }
 
-    // Files or a folder dragged onto the window: a folder becomes the root, a file opens.
+    // Files or a folder dragged onto the window: the first one opens.
     void OpenDropped(List<string> paths)
     {
         if (paths.FirstOrDefault() is not { } path) return;
-        if (SafePath.DirectoryExists(path)) SetRoot(path);
-        else if (SafePath.FileExists(path) && OpenPath(path) is { } rel) Post(new { type = "open", rel });
+        OpenAny(path);
         Activate();
     }
 
@@ -623,9 +639,20 @@ sealed class MainForm : Form
     }
 
     // The reading history as the web app shows it: full path, when, and whether the file is still there.
-    object[] HistoryItems() => settings.History
-        .Select(h => (object)new { path = h.Path, when = new DateTimeOffset(h.When).ToUnixTimeMilliseconds(), scroll = h.Scroll, exists = SafePath.FileExists(h.Path) })
-        .ToArray();
+    object[] HistoryItems(bool recheck = false)
+    {
+        if (recheck) historyExists.Clear();
+        return settings.History
+            .Select(h => (object)new { path = h.Path, when = new DateTimeOffset(h.When).ToUnixTimeMilliseconds(), scroll = h.Scroll, exists = HistoryFileExists(h.Path) })
+            .ToArray();
+    }
+
+    // Whether each history file still exists, as last checked: checked again when the page loads and after
+    // files change, not on every page turn.
+    readonly Dictionary<string, bool> historyExists = new(StringComparer.OrdinalIgnoreCase);
+
+    bool HistoryFileExists(string path) =>
+        historyExists.TryGetValue(path, out var known) ? known : historyExists[path] = SafePath.FileExists(path);
 
     // ---------- full-text search ----------
 
@@ -645,7 +672,7 @@ sealed class MainForm : Form
                 foreach (var rel in files.Where(IsMarkdown))
                 {
                     string[] lines;
-                    try { lines = ReadForSearch(Path.Combine(dir, rel.Replace('/', '\\'))); }
+                    try { lines = ReadForSearch(Paths.FromRel(dir, rel)); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
                     int nth = 0, fileHits = 0;
                     bool inDiagram = false;
@@ -725,7 +752,7 @@ sealed class MainForm : Form
         Task.Run(() =>
         {
             var missing = dirs.Where(d => SafePath.Reachable(d) && !Directory.Exists(d)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (missing.Count > 0 && IsHandleCreated) BeginInvoke(() => { settings.Dirs.RemoveAll(missing.Contains); settings.Save(); });
+            if (missing.Count > 0 && IsHandleCreated) BeginInvoke(() => settings.ForgetDirs(missing));
         });
     }
 
@@ -742,8 +769,9 @@ sealed class MainForm : Form
 
     void PickFile()
     {
-        using var dlg = new OpenFileDialog { Filter = "Markdown (*.md;*.markdown)|*.md;*.markdown|所有檔案|*.*", InitialDirectory = root };
-        if (dlg.ShowDialog(this) == DialogResult.OK && OpenPath(dlg.FileName) is { } rel) Post(new { type = "open", rel });
+        var markdown = string.Join(";", Paths.MarkdownExtensions.Select(e => "*" + e));
+        using var dlg = new OpenFileDialog { Filter = $"Markdown ({markdown})|{markdown}|所有檔案|*.*", InitialDirectory = root };
+        if (dlg.ShowDialog(this) == DialogResult.OK) OpenAny(dlg.FileName);
     }
 
     void PickFolder()
@@ -803,8 +831,7 @@ sealed class MainForm : Form
 
     string? clipText; // the last clipboard text that named files, for listing them all on request
 
-    object FileItems(IEnumerable<string> files) =>
-        files.Select(f => new { path = f, rel = IsUnder(f, root) ? ToRel(f) : null }).ToList();
+    object FileItems(IEnumerable<string> files) => files.Select(f => new { path = f, rel = RelIfUnder(f) }).ToList();
 
     void ReadClipboard()
     {
@@ -827,10 +854,8 @@ sealed class MainForm : Form
             else if (Clipboard.ContainsText() && Clipboard.GetText() is { Length: <= MaxClipboardText } text)
             {
                 (var pathText, hash) = SplitFragment(text);
-                var finder = Finder();
                 // "Open the first" needs only the first file and whether there are others.
-                (found, matches, files, more, deliberate) = finder.Analyze(pathText, settings.ClipChars, settings.ClipMulti == "first" ? 1 : settings.ClipMax);
-                foreach (var dir in finder.SeenDirs) settings.RememberDir(dir);
+                (found, matches, files, more, deliberate) = Find(f => f.Analyze(pathText, settings.ClipChars, settings.ClipMulti == "first" ? 1 : settings.ClipMax));
                 if (files.Count > 0) hash = null; // a heading belongs to one file
                 clipText = pathText;
             }
@@ -851,7 +876,7 @@ sealed class MainForm : Form
         {
             type = "clipboard",
             path = found,
-            rel = found is not null && IsUnder(found, root) ? ToRel(found) : null,
+            rel = found is null ? null : RelIfUnder(found),
             matches = found is null && matches.Count > 0 ? matches : null,
             files = files.Count > 0 ? FileItems(files) : null,
             more,
@@ -908,7 +933,6 @@ sealed class MainForm : Form
         {
             if (theme.Dark) settings.LastDark = id; else settings.LastLight = id;
         }
-        settings.Save();
         BackColor = theme.Color("bg");
         if (web is not null) web.DefaultBackgroundColor = BackColor;
         ApplyTitleBar();
@@ -931,14 +955,17 @@ sealed class MainForm : Form
         var md = IsMarkdown(e.FullPath);
         if (!IsListed(e.FullPath) && !(structural && !Path.HasExtension(e.FullPath))) return;
         // A git checkout or package install changes thousands of files in folders the tree leaves out.
-        if (Path.GetRelativePath(root, e.FullPath).Split('\\').SkipLast(1).Any(IsSkippedDir)) return;
-        BeginInvoke(() =>
-        {
-            if (structural) treeDirty = true;
-            if (md && e.ChangeType == WatcherChangeTypes.Changed) changedFiles.Add(e.FullPath);
-            debounce.Stop();
-            debounce.Start();
-        });
+        if (ToRel(e.FullPath).Split('/').SkipLast(1).Any(IsSkippedDir)) return;
+        BeginInvoke(() => QueueRefresh(structural, md && !structural ? e.FullPath : null));
+    }
+
+    // File changes come in bursts: the tree and the open document refresh once they pause.
+    void QueueRefresh(bool tree, string? changedFile)
+    {
+        if (tree) treeDirty = true;
+        if (changedFile is not null) changedFiles.Add(changedFile);
+        debounce.Stop();
+        debounce.Start();
     }
 
     // ---------- serving ----------
@@ -953,57 +980,57 @@ sealed class MainForm : Form
             {
                 e.Response = AppResource(rel["__app/".Length..]) is var (bytes, type)
                     ? Respond(env, bytes, type)
-                    : Respond(env, Encoding.UTF8.GetBytes(ErrorPage("找不到", rel)), "text/html; charset=utf-8", 404);
+                    : Html(env, ErrorPage("找不到", rel), 404);
                 return;
             }
             if (rel == "__export")
             {
-                e.Response = Respond(env, Encoding.UTF8.GetBytes(exportHtml), "text/html; charset=utf-8");
+                e.Response = Html(env, exportHtml);
                 return;
             }
             if (rel == "__api/tree")
             {
                 var deferral = e.GetDeferral();
-                var r = root;
-                Task.Run(() => BuildChildren(new DirectoryInfo(r), r) ?? [])
-                    .ContinueWith(t =>
-                    {
-                        if (t.IsCompletedSuccessfully)
-                        {
-                            if (r == root) knownFiles = Flatten(t.Result).ToList();
-                            e.Response = Respond(env, JsonSerializer.SerializeToUtf8Bytes(t.Result, Json), "application/json");
-                        }
-                        else e.Response = Respond(env, "[]"u8.ToArray(), "application/json", 500);
-                        deferral.Complete();
-                    }, TaskScheduler.FromCurrentSynchronizationContext());
+                ScanTree().ContinueWith(t =>
+                {
+                    e.Response = t.IsCompletedSuccessfully
+                        ? Respond(env, JsonSerializer.SerializeToUtf8Bytes(t.Result, Json), "application/json")
+                        : Respond(env, "[]"u8.ToArray(), "application/json", 500);
+                    deferral.Complete();
+                }, TaskScheduler.FromCurrentSynchronizationContext());
                 return;
             }
 
             var path = FromRel(rel);
             if (path is null || !SafePath.FileExists(path))
             {
-                e.Response = Respond(env, Encoding.UTF8.GetBytes(ErrorPage("找不到檔案", rel)), "text/html; charset=utf-8", 404);
+                e.Response = Html(env, ErrorPage("找不到檔案", rel), 404);
                 return;
             }
-            var mime = MimeFor(path);
             if (IsImage(path) && new Uri(e.Request.Uri).Query.Contains("view"))
             {
-                e.Response = Respond(env, Encoding.UTF8.GetBytes(ImagePage(rel)), "text/html; charset=utf-8");
+                e.Response = Html(env, ImagePage(rel));
                 return;
             }
-            e.Response = IsMarkdown(path) ? Respond(env, Encoding.UTF8.GetBytes(RenderMarkdown(path)), "text/html; charset=utf-8")
-                : mime.StartsWith("text/plain") ? Respond(env, Encoding.UTF8.GetBytes(RenderPlain(path)), "text/html; charset=utf-8")
-                : Respond(env, TextFiles.ReadBytes(path), mime);
+            // Pictures, PDFs and HTML files as they are, under the same no-scripts policy as documents
+            // (an .html or .svg file could otherwise run script in the viewer); anything else as text.
+            e.Response = IsMarkdown(path) ? Html(env, RenderMarkdown(path))
+                : MimeFor(path) is { } mime && (mime.StartsWith("image/") || mime.StartsWith("text/html") || mime == "application/pdf")
+                    ? Respond(env, TextFiles.ReadBytes(path), mime, policy: DocumentPolicy)
+                : Html(env, RenderPlain(path));
         }
         catch (IOException ex)
         {
-            e.Response = Respond(env, Encoding.UTF8.GetBytes(ErrorPage("讀取失敗", ex.Message)), "text/html; charset=utf-8", 500);
+            e.Response = Html(env, ErrorPage("讀取失敗", ex.Message), 500);
         }
     }
 
-    static CoreWebView2WebResourceResponse Respond(CoreWebView2Environment env, byte[] body, string type, int status = 200) =>
+    static CoreWebView2WebResourceResponse Respond(CoreWebView2Environment env, byte[] body, string type, int status = 200, string? policy = null) =>
         env.CreateWebResourceResponse(new MemoryStream(body), status, status == 200 ? "OK" : "Error",
-            $"Content-Type: {type}\nCache-Control: no-store");
+            $"Content-Type: {type}\nCache-Control: no-store" + (policy is null ? "" : $"\nContent-Security-Policy: {policy}"));
+
+    static CoreWebView2WebResourceResponse Html(CoreWebView2Environment env, string html, int status = 200) =>
+        Respond(env, Encoding.UTF8.GetBytes(html), "text/html; charset=utf-8", status);
 
     (byte[] Bytes, string Type)? AppResource(string name)
     {
@@ -1022,8 +1049,16 @@ sealed class MainForm : Form
                     clipChars = settings.ClipChars,
                     clipMulti = settings.ClipMulti,
                     clipMax = settings.ClipMax,
+                    // The rules the page needs, from their one definition here.
+                    clipModesTitle = Settings.ClipModesTitle,
+                    clipModes = Settings.ClipModes.Select(m => new { id = m.Id, label = m.Label }),
+                    clipMultiModes = Settings.ClipMultiModes.Select(m => new { id = m.Id, label = m.Label }),
+                    clipMaxRange = new[] { Settings.MinClipMax, Settings.MaxClipMax },
+                    imageExtensions = ImageExtensions.Select(x => x[1..]),
+                    autoLight = Themes.AutoLight,
+                    autoDark = Themes.AutoDark,
                     startScroll = TakeStartScroll(),
-                    history = HistoryItems(),
+                    history = HistoryItems(recheck: true),
                     themes = Themes.All.Select(t => new { t.Id, t.Name, t.Dark, bg = t.Hex("bg"), accent = t.Hex("accent"), h3 = t.Hex("h3") }),
                 }, Json);
                 var html = Resource("app.html")
@@ -1031,40 +1066,22 @@ sealed class MainForm : Form
                     .Replace("/*THEMES*/", Themes.Css)
                     .Replace("/*CONFIG*/", $"window.MD = {config};");
                 return (Encoding.UTF8.GetBytes(html), "text/html; charset=utf-8");
-            case "app.css" or "zoom.css":
-                return (Encoding.UTF8.GetBytes(Resource(name)), "text/css; charset=utf-8");
-            case "app.js" or "zoom.js" or "hljs.min.js" or "mermaid.min.js":
-                return (Encoding.UTF8.GetBytes(Resource(name)), "text/javascript; charset=utf-8");
-            default:
-                // bundled libraries with their own files, e.g. katex/katex.min.css and katex/fonts/*.woff2
-                return ResourceBytes(name) is { } bytes ? (bytes, MimeFor(name) is var t && t.StartsWith("text/plain") ? AppMime(name) : t) : null;
+            default: // app.css, app.js, the bundled libraries, katex/fonts/*.woff2, ...
+                return ResourceBytes(name) is { } bytes ? (bytes, MimeFor(name) ?? "application/octet-stream") : null;
         }
     }
 
-    static string AppMime(string name) => Path.GetExtension(name).ToLowerInvariant() switch
+    static byte[]? ResourceBytes(string name) => resources.GetOrAdd(name, static n =>
     {
-        ".js" => "text/javascript; charset=utf-8",
-        ".css" => "text/css; charset=utf-8",
-        ".woff2" => "font/woff2",
-        _ => "application/octet-stream",
-    };
-
-    static byte[]? ResourceBytes(string name)
-    {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(name);
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(n);
         if (stream is null) return null;
         using var buffer = new MemoryStream();
         stream.CopyTo(buffer);
         return buffer.ToArray();
-    }
+    });
 
-    static string Resource(string name)
-    {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(name)
-            ?? throw new FileNotFoundException(name);
-        using var reader = new StreamReader(stream, Encoding.UTF8);
-        return reader.ReadToEnd();
-    }
+    static string Resource(string name) =>
+        resourceTexts.GetOrAdd(name, static n => Encoding.UTF8.GetString(ResourceBytes(n) ?? throw new FileNotFoundException(n)));
 
     sealed record TreeItem(string Name, string? Path, List<TreeItem>? Children);
 
@@ -1093,7 +1110,7 @@ sealed class MainForm : Form
             if (BuildChildren(d, root) is { Count: > 0 } children) items.Add(new(d.Name, null, children));
         }
         foreach (var f in files)
-            items.Add(new(f.Name, Path.GetRelativePath(root, f.FullName).Replace('\\', '/'), null));
+            items.Add(new(f.Name, Paths.ToRel(root, f.FullName), null));
         return items;
     }
 
@@ -1179,12 +1196,8 @@ sealed class MainForm : Form
     {
         var url = "/" + string.Join('/', rel.Split('/').Select(Uri.EscapeDataString));
         var label = JsonSerializer.Serialize(Path.GetFileName(rel));
-        return $$"""
-            <!doctype html>
-            <html data-theme="{{theme.Id}}"><head><meta charset="utf-8">
-            <meta http-equiv="Content-Security-Policy" content="{{ImagePolicy}}">
-            <title>{{WebUtility.HtmlEncode(Path.GetFileName(rel))}}</title>
-            <style>{{Themes.Css}}{{Resource("doc.css")}}</style><link rel="stylesheet" href="/__app/zoom.css"></head>
+        return PageHead(Path.GetFileName(rel), ImagePolicy) + $$"""
+            <link rel="stylesheet" href="/__app/zoom.css"></head>
             <body class="image-page"><div class="zoom-stage" id="stage"><img id="img" src="{{url}}" alt=""></div>
             <script src="/__app/zoom.js"></script>
             <script>
@@ -1215,26 +1228,29 @@ sealed class MainForm : Form
     // out what is off screen, which is most of the time spent opening a document of several MB.
     const int BigPage = 500_000;
 
-    string Page(string title, string body) => $$"""
+    string Page(string title, string body) =>
+        PageHead(title, DocumentPolicy) + $"</head><body{(body.Length > BigPage ? " class=\"big\"" : "")}><main>{body}</main></body></html>";
+
+    // The start of every page we make, up to the open <head>: theme, security policy, title, styles.
+    string PageHead(string title, string policy) => $$"""
         <!doctype html>
         <html data-theme="{{theme.Id}}"><head><meta charset="utf-8">
-        <meta http-equiv="Content-Security-Policy" content="{{DocumentPolicy}}">
+        <meta http-equiv="Content-Security-Policy" content="{{policy}}">
         <title>{{WebUtility.HtmlEncode(title)}}</title>
-        <style>{{Themes.Css}}{{Resource("doc.css")}}</style></head>
-        <body{{(body.Length > BigPage ? " class=\"big\"" : "")}}><main>{{body}}</main></body></html>
+        <style>{{PageStyle.Value}}</style>
         """;
 
-    static string MimeFor(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    // Every theme's variables and the document stylesheet: the same for every page, so built once.
+    static readonly Lazy<string> PageStyle = new(() => Themes.Css + Resource("doc.css"));
+
+    // The one table of content types: for files under the root and for the app's own resources.
+    static readonly Dictionary<string, string> MimeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".png" => "image/png",
-        ".jpg" or ".jpeg" => "image/jpeg",
-        ".gif" => "image/gif",
-        ".svg" => "image/svg+xml",
-        ".webp" => "image/webp",
-        ".bmp" => "image/bmp",
-        ".ico" => "image/x-icon",
-        ".pdf" => "application/pdf",
-        ".html" or ".htm" => "text/html; charset=utf-8",
-        _ => "text/plain; charset=utf-8",
+        [".png"] = "image/png", [".jpg"] = "image/jpeg", [".jpeg"] = "image/jpeg", [".gif"] = "image/gif",
+        [".svg"] = "image/svg+xml", [".webp"] = "image/webp", [".bmp"] = "image/bmp", [".ico"] = "image/x-icon",
+        [".pdf"] = "application/pdf", [".html"] = "text/html; charset=utf-8", [".htm"] = "text/html; charset=utf-8",
+        [".js"] = "text/javascript; charset=utf-8", [".css"] = "text/css; charset=utf-8", [".woff2"] = "font/woff2",
     };
+
+    static string? MimeFor(string path) => MimeTypes.GetValueOrDefault(Path.GetExtension(path));
 }
