@@ -108,7 +108,7 @@ function loadRootState() {
 
 const themeById = Object.fromEntries(cfg.themes.map((t) => [t.id, t]));
 const resolveTheme = (id) =>
-  themeById[id === "auto" ? (cfg.systemDark ? cfg.autoDark : cfg.autoLight) : id] ?? cfg.themes[0];
+  themeById[id === cfg.autoTheme ? (cfg.systemDark ? cfg.autoDark : cfg.autoLight) : id] ?? cfg.themes[0];
 
 function setThemeAttr(id) {
   document.documentElement.dataset.theme = id;
@@ -116,14 +116,15 @@ function setThemeAttr(id) {
   if (doc?.documentElement) doc.documentElement.dataset.theme = id;
 }
 
+// The last light and dark picks (for the light/dark toggle) are kept here and stored by the host.
 function applyTheme(id, save = true) {
   const t = resolveTheme(id);
   state.theme = id;
-  if (id !== "auto") { if (t.dark) state.lastDark = id; else state.lastLight = id; }
+  if (id !== cfg.autoTheme) { if (t.dark) state.lastDark = id; else state.lastLight = id; }
   setThemeAttr(t.id);
   $("dark").innerHTML = icon(t.dark ? "sun" : "moon");
   $("dark").title = t.dark ? "切換為亮色 (Ctrl+D)" : "切換為暗色 (Ctrl+D)";
-  if (save) post({ type: "theme", id });
+  if (save) post({ type: "theme", id, lastLight: state.lastLight, lastDark: state.lastDark });
   if (frame.contentDocument?.querySelector(".mermaid.figure")) renderDiagrams(frame.contentDocument);
 }
 
@@ -135,8 +136,8 @@ const toggleDark = () => applyTheme(resolveTheme(state.theme).dark ? state.lastL
 const rootStyle = getComputedStyle(document.documentElement);
 const defaultWidths = { sideW: parseInt(rootStyle.getPropertyValue("--side-w")), tocW: parseInt(rootStyle.getPropertyValue("--toc-w")) };
 const layout = Object.assign(
-  { side: true, toc: true, zen: false, ...defaultWidths, kind: "all", zoom: 1, clip: "auto" },
-  store.get("layout", {}), { clip: cfg.clip ?? "auto" }); // the host owns the clipboard mode (the tray menu sets it too)
+  { side: true, toc: true, zen: false, ...defaultWidths, kind: "all", zoom: 1 },
+  store.get("layout", {}), { clip: cfg.clip }); // the host owns the clipboard mode (the tray menu sets it too)
 // Also the host's: how many other characters may come with a path for it to open by itself, and what
 // to do when one copy names several files ("list" them, or open the "first").
 const clipOpts = { chars: cfg.clipChars, multi: cfg.clipMulti, max: cfg.clipMax };
@@ -1372,7 +1373,7 @@ function openThemeMenu() {
   const row = (t) => `<button data-theme="${t.id}"><span class="sw"><i style="background:${t.bg}"></i><i style="background:${t.accent}"></i><i style="background:${t.h3}"></i></span><span>${esc(t.name)}</span>${check(t.id)}</button>`;
   const menu = $("theme-menu");
   menu.innerHTML =
-    `<button data-theme="auto"><span class="sw"><i style="background:${themeById[cfg.autoLight].bg}"></i><i style="background:${themeById[cfg.autoDark].bg}"></i></span><span>跟隨系統</span>${check("auto")}</button>` +
+    `<button data-theme="${cfg.autoTheme}"><span class="sw"><i style="background:${themeById[cfg.autoLight].bg}"></i><i style="background:${themeById[cfg.autoDark].bg}"></i></span><span>跟隨系統</span>${check(cfg.autoTheme)}</button>` +
     `<div class="label">亮色</div>${cfg.themes.filter((t) => !t.dark).map(row).join("")}` +
     `<div class="label">暗色</div>${cfg.themes.filter((t) => t.dark).map(row).join("")}`;
   showMenu(menu, $("theme"));
@@ -1591,30 +1592,26 @@ $("toast").addEventListener("mouseleave", () => { if (!toastUntilInteraction) ar
 
 // ---------- clipboard ----------
 
-// The host reports copied markdown/image paths it can find on disk.
-// deliberate: few other words came with the path (see clipOpts.chars). A passage that merely mentions a
-// file is only offered: no jumping to it, and no raising the window over what the user is doing.
+// The host reports copied markdown/image paths it can find on disk, with what to do about them (m.action,
+// decided by ClipboardPolicy): this carries it out against what is on screen. force: the user clicked the
+// tray notification.
 function onClipboard(m) {
-  const mode = m.force ? "auto" : layout.clip; // force: the user clicked the tray notification
-  if (mode === "off") return;
-  const offerOnly = mode === "hint" || (m.deliberate === false && !m.force);
-  if (!m.fromSelf && m.deliberate !== false) post({ type: "raise" }); // copied elsewhere: make sure the viewer is visible
-  const CLIP_MS = "interact";
+  const CLIP_MS = "interact", listAll = () => post({ type: "clipList" });
   if (m.files) {
     const n = m.files.length, pick = () => openPick(m.files, m.more);
-    if (m.force && clipOpts.multi === "list") { pick(); return; }
-    if (!offerOnly && clipOpts.multi === "first") {
+    if (m.action === "OpenFirst") {
       openClipFile(m.files[0]);
       // From text only the first was looked for; the host finds the rest when asked.
       const label = m.files[0].rel ?? m.files[0].path;
-      if (n === 1) toast(`已從剪貼簿開啟：${label}，剪貼簿裡還有其他檔案`, { label: "列出", run: () => post({ type: "clipList" }) }, CLIP_MS);
+      if (n === 1) toast(`已從剪貼簿開啟：${label}，剪貼簿裡還有其他檔案`, { label: "列出", run: listAll }, CLIP_MS);
       else toast(`已從剪貼簿開啟：${label}，還有 ${m.more ? "超過 " : ""}${n - 1} 個`, { label: "選擇", run: pick }, CLIP_MS);
-      return;
     }
-    if (n === 1) { toast("剪貼簿裡提到多個檔案", { label: "列出", run: () => post({ type: "clipList" }) }, CLIP_MS); return; } // "open the first" only looked for the first
-    toast(`剪貼簿裡有${m.more ? "超過 " : " "}${n} 個檔案`, { label: "選擇", run: pick }, CLIP_MS);
+    else if (m.force) pick();
+    else if (n === 1) toast("剪貼簿裡提到多個檔案", { label: "列出", run: listAll }, CLIP_MS); // only the first was looked for
+    else toast(`剪貼簿裡有${m.more ? "超過 " : " "}${n} 個檔案`, { label: "選擇", run: pick }, CLIP_MS);
     return;
   }
+  const offerOnly = m.action !== "Open";
   if (m.matches) {
     // Only a file name / path tail was copied. Prefer the match next to the open document.
     const dir = state.current ? state.current.slice(0, state.current.lastIndexOf("/") + 1) : "";
@@ -1635,7 +1632,7 @@ function onClipboard(m) {
   }
   const label = m.rel ?? m.path;
   const open = () => openClipFile(m, false, m.hash ?? "");
-  if (offerOnly) { toast((mode === "hint" ? "剪貼簿：" : "剪貼簿裡提到：") + label, { label: "開啟", run: open }, CLIP_MS); return; }
+  if (offerOnly) { toast((m.action === "Offer" ? "剪貼簿：" : "剪貼簿裡提到：") + label, { label: "開啟", run: open }, CLIP_MS); return; }
   const from = state.current;
   open();
   // A copy made inside the viewer may just be text being read; offer a one-click way back.
@@ -1720,7 +1717,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "exported": onExported(m); break;
     case "system":
       cfg.systemDark = m.dark;
-      if (state.theme === "auto") applyTheme("auto", false);
+      if (state.theme === cfg.autoTheme) applyTheme(cfg.autoTheme, false);
       break;
   }
 });

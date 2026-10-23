@@ -4,21 +4,18 @@ namespace MdViewer;
 
 static class Program
 {
-    const string MutexName = "MdViewer.SingleInstance";
-    internal const string PipeName = "MdViewer.Open";
-    internal const string ExitRequest = "--exit";
+    const string MutexName = AppInfo.Name + ".SingleInstance";
+    internal const string PipeName = AppInfo.Name + ".Open";
 
     [STAThread]
     static void Main(string[] args)
     {
-        // --tray: started at sign-in; stay in the notification area until needed.
-        // --exit: ask the running instance to quit properly (it removes its tray icon); used by publish.ps1.
-        var startHidden = args.Contains("--tray");
+        var startHidden = args.Contains(AppInfo.TraySwitch);
         var path = args.FirstOrDefault(a => !a.StartsWith("--"));
         using var mutex = new Mutex(true, MutexName, out var first);
-        if (args.Contains("--exit"))
+        if (args.Contains(AppInfo.ExitSwitch))
         {
-            if (!first) SendToRunningInstance(ExitRequest);
+            if (!first) SendToRunningInstance(AppInfo.ExitSwitch);
             return;
         }
         if (!first && (startHidden || SendToRunningInstance(path))) return;
@@ -34,11 +31,11 @@ static class Program
     {
         try
         {
-            AllowSetForegroundWindow(-1); // we were launched by the user, so let the open window come to front
+            Native.AllowSetForegroundWindow(-1); // we were launched by the user, so let the open window come to front
             using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
             pipe.Connect(2000);
             using var writer = new StreamWriter(pipe);
-            writer.WriteLine(path is null ? "" : path == ExitRequest ? path : Path.GetFullPath(path));
+            writer.WriteLine(path is null ? "" : path == AppInfo.ExitSwitch ? path : Path.GetFullPath(path));
             return true;
         }
         catch (Exception ex) when (ex is TimeoutException or IOException)
@@ -47,8 +44,7 @@ static class Program
         }
     }
 
-    internal static readonly string ErrorLog = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MdViewer", "error.log");
+    internal static readonly string ErrorLog = Path.Combine(AppInfo.DataDir, "error.log");
 
     const long MaxLogBytes = 1_000_000;
 
@@ -63,7 +59,4 @@ static class Program
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    static extern bool AllowSetForegroundWindow(int processId);
 }

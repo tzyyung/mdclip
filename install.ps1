@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 
 $classes = 'HKCU:\Software\Classes'
 $progId = 'mdviewer.md'
-$extensions = '.md', '.markdown'
+$extensions = '.md', '.markdown' # the same list as Paths.MarkdownExtensions in MdViewer.Core (this script runs without the app)
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'MdViewer.lnk'
 
 Add-Type -Namespace MdViewer -Name Shell -MemberDefinition @'

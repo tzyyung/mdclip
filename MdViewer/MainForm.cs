@@ -2,11 +2,10 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Reflection;
-using System.Runtime.InteropServices;
+using System.Runtime.InteropServices; // ExternalException, COMException
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
@@ -32,7 +31,7 @@ sealed class MainForm : Form
         { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
     WebView2? web; // null while the window is hidden in the tray, so the browser processes can exit
-    readonly NotifyIcon tray = new() { Text = "MdViewer" };
+    readonly NotifyIcon tray = new() { Text = AppInfo.Name };
     readonly bool startHidden;
     bool exiting, showQuietly, appReady, listening;
     string? lastOpened; // full path of the open document, reopened when the window comes back
@@ -66,7 +65,7 @@ sealed class MainForm : Form
     public MainForm(string? startPath, bool startHidden)
     {
         this.startHidden = startHidden;
-        Text = "MdViewer";
+        Text = AppInfo.Name;
         Icon = AppIcon;
         Size = new Size(1440, 920);
         StartPosition = FormStartPosition.CenterScreen;
@@ -122,7 +121,7 @@ sealed class MainForm : Form
         if (startPath is not null && SafePath.FileExists(startPath))
         {
             var full = Path.GetFullPath(startPath);
-            SetRoot(FindRoot(full));
+            OpenFile(full);
             return full;
         }
         if (startPath is not null && SafePath.DirectoryExists(startPath)) SetRoot(startPath);
@@ -151,18 +150,13 @@ sealed class MainForm : Form
         core.NewWindowRequested += (_, e) => { e.Handled = true; OpenExternal(e.Uri); };
         core.WebMessageReceived += OnMessage;
 
-        string? startRel = null;
-        if (lastOpened is { } file && SafePath.FileExists(file))
-        {
-            if (!IsUnder(file, root)) SetRoot(FindRoot(file));
-            startRel = ToRel(file);
-        }
+        var startRel = lastOpened is { } file && SafePath.FileExists(file) ? OpenFile(file) : null;
         core.Navigate(Origin + "__app/" + (startRel is null ? "" : "#" + Uri.EscapeDataString(startRel)));
     }
 
     async Task<WebView2> CreateWebViewAsync()
     {
-        var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MdViewer", "WebView2");
+        var dataDir = Path.Combine(AppInfo.DataDir, "WebView2");
         var view = AddWebView();
         try
         {
@@ -178,7 +172,7 @@ sealed class MainForm : Form
             Controls.Remove(view);
             view.Dispose();
             view = AddWebView();
-            var privateDir = Path.Combine(Path.GetTempPath(), "MdViewer", "WebView2-" + Environment.ProcessId);
+            var privateDir = Path.Combine(Path.GetTempPath(), AppInfo.Name, "WebView2-" + Environment.ProcessId);
             await view.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, privateDir));
             return view;
         }
@@ -211,7 +205,7 @@ sealed class MainForm : Form
     void SetupTray()
     {
         var menu = new ContextMenuStrip();
-        var open = new ToolStripMenuItem("開啟 MdViewer", null, (_, _) => ShowFromTray(activate: true));
+        var open = new ToolStripMenuItem("開啟 " + AppInfo.Name, null, (_, _) => ShowFromTray(activate: true));
         open.Font = new Font(open.Font, FontStyle.Bold);
         var clip = new ToolStripMenuItem(Settings.ClipModesTitle);
         foreach (var (mode, label) in Settings.ClipModes)
@@ -269,7 +263,7 @@ sealed class MainForm : Form
         settings.TrayHintShown = true;
         FlushSettings(); // hidden for possibly hours, and signing out may be next
         if (firstTime)
-            tray.ShowBalloonTip(8000, "MdViewer 還在背景執行",
+            tray.ShowBalloonTip(8000, AppInfo.Name + " 還在背景執行",
                 "複製 .md 或圖片路徑時會自動開啟。要結束程式，請在這個圖示按右鍵 →「結束」。", ToolTipIcon.Info);
     }
 
@@ -291,7 +285,7 @@ sealed class MainForm : Form
     // activate: false when a clipboard copy brings the window back, so typing stays in the app the user is in.
     void ShowFromTray(bool activate)
     {
-        if (!activate && GetForegroundWindow() is var current && current != Handle) returnFocusTo = current;
+        if (!activate && Native.GetForegroundWindow() is var current && current != Handle) returnFocusTo = current;
         if (!Visible)
         {
             showQuietly = !activate;
@@ -310,14 +304,8 @@ sealed class MainForm : Form
     // hand it back to where the user was typing. Called after the show and again once the page is up.
     void GiveFocusBack()
     {
-        if (returnFocusTo != IntPtr.Zero && GetForegroundWindow() == Handle) SetForegroundWindow(returnFocusTo);
+        if (returnFocusTo != IntPtr.Zero && Native.GetForegroundWindow() == Handle) Native.SetForegroundWindow(returnFocusTo);
     }
-
-    [DllImport("user32.dll")]
-    static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    static extern bool SetForegroundWindow(IntPtr hwnd);
 
     // Started at sign-in: create the window (the clipboard listener needs it) but keep it hidden.
     protected override void SetVisibleCore(bool value)
@@ -351,19 +339,19 @@ sealed class MainForm : Form
     }
 
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    static string AutostartCommand => $"\"{Environment.ProcessPath}\" --tray";
+    static string AutostartCommand => $"\"{Environment.ProcessPath}\" {AppInfo.TraySwitch}";
 
     static bool IsAutostart()
     {
         using var key = Registry.CurrentUser.OpenSubKey(RunKey);
-        return key?.GetValue("MdViewer") as string == AutostartCommand;
+        return key?.GetValue(AppInfo.Name) as string == AutostartCommand;
     }
 
     static void SetAutostart(bool on)
     {
         using var key = Registry.CurrentUser.CreateSubKey(RunKey);
-        if (on) key.SetValue("MdViewer", AutostartCommand);
-        else key.DeleteValue("MdViewer", throwOnMissingValue: false);
+        if (on) key.SetValue(AppInfo.Name, AutostartCommand);
+        else key.DeleteValue(AppInfo.Name, throwOnMissingValue: false);
     }
 
     // ---------- single instance ----------
@@ -391,7 +379,7 @@ sealed class MainForm : Form
 
     void OpenFromOtherInstance(string? path)
     {
-        if (path == Program.ExitRequest) { ExitApp(); return; }
+        if (path == AppInfo.ExitSwitch) { ExitApp(); return; }
         if (!string.IsNullOrEmpty(path)) OpenAny(path);
         ShowFromTray(activate: true);
     }
@@ -400,7 +388,7 @@ sealed class MainForm : Form
 
     void SetRoot(string dir)
     {
-        root = Path.GetFullPath(dir).TrimEnd('\\');
+        root = Paths.NormalizeDir(dir);
         watcher.EnableRaisingEvents = false;
         watcher.Path = root;
         watcher.EnableRaisingEvents = true;
@@ -485,9 +473,13 @@ sealed class MainForm : Form
 
         switch (Str("type"))
         {
-            case "theme": ApplyTheme(Str("id")); break;
-            case "title": Text = Str("text") is { Length: > 0 } t ? $"{t} — MdViewer" : "MdViewer"; break;
-            case "raise": BringToTop(); break;
+            case "theme": // the page keeps the last light and dark picks (for its light/dark toggle); stored here
+                settings.Theme = Str("id");
+                settings.LastLight = Str("lastLight");
+                settings.LastDark = Str("lastDark");
+                UseTheme(settings.Theme);
+                break;
+            case "title": Text = Str("text") is { Length: > 0 } t ? $"{t} — {AppInfo.Name}" : AppInfo.Name; break;
             case "ready":
                 appReady = true;
                 foreach (var waiting in afterReady) Post(waiting);
@@ -512,7 +504,6 @@ sealed class MainForm : Form
                 {
                     lastOpened = opened;
                     historyExists[opened] = true;
-                    settings.RememberDir(Path.GetDirectoryName(opened)!);
                     settings.RememberFile(opened);
                     Post(new { type = "history", items = HistoryItems() });
                 }
@@ -561,7 +552,7 @@ sealed class MainForm : Form
         try
         {
             Clipboard.SetText(text);
-            lastClipboardSeq = GetClipboardSequenceNumber();
+            lastClipboardSeq = Native.GetClipboardSequenceNumber();
         }
         catch (ExternalException ex) { Program.LogError(ex); }
     }
@@ -662,7 +653,7 @@ sealed class MainForm : Form
         systemDark = dark;
         BeginInvoke(() =>
         {
-            if (settings.Theme == Themes.Auto) ApplyTheme(Themes.Auto);
+            if (settings.Theme == Themes.Auto) UseTheme(Themes.Auto);
             Post(new { type = "system", dark });
         });
     }
@@ -722,7 +713,7 @@ sealed class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        AddClipboardFormatListener(Handle);
+        Native.AddClipboardFormatListener(Handle);
         ApplyTitleBar();
         if (listening) return;
         listening = true;
@@ -732,8 +723,7 @@ sealed class MainForm : Form
 
     protected override void WndProc(ref Message m)
     {
-        const int WM_CLIPBOARDUPDATE = 0x031D;
-        if (m.Msg == WM_CLIPBOARDUPDATE) OnClipboardChanged();
+        if (m.Msg == Native.WM_CLIPBOARDUPDATE) OnClipboardChanged();
         base.WndProc(ref m);
     }
 
@@ -760,7 +750,7 @@ sealed class MainForm : Form
     void ReadClipboard()
     {
         clipboardDelay.Stop();
-        var seq = GetClipboardSequenceNumber();
+        var seq = Native.GetClipboardSequenceNumber();
         if (seq == lastClipboardSeq) return;
 
         string? found = null, hash = null;
@@ -779,7 +769,7 @@ sealed class MainForm : Form
             {
                 (var pathText, hash) = SplitFragment(text);
                 // "Open the first" needs only the first file and whether there are others.
-                (found, matches, files, more, deliberate) = Find(f => f.Analyze(pathText, settings.ClipChars, settings.ClipMulti == "first" ? 1 : settings.ClipMax));
+                (found, matches, files, more, deliberate) = Find(f => f.Analyze(pathText, settings.ClipChars, settings.ClipMulti == Settings.MultiFirst ? 1 : settings.ClipMax));
                 if (files.Count > 0) hash = null; // a heading belongs to one file
                 clipText = pathText;
             }
@@ -794,36 +784,43 @@ sealed class MainForm : Form
         lastClipboardSeq = seq;
 
         if (found is null && matches.Count == 0 && files.Count == 0) return;
-        // force: act even in "hint" mode or on a passage (the user clicked the tray notification).
-        // deliberate: few other words were copied with the path; otherwise the page only offers it.
-        object Message(bool? force) => new
+        // What to do is decided once, here (ClipboardPolicy); the page carries it out. force: the user clicked
+        // the tray notification.
+        var fromSelf = ActiveForm == this;
+        object Message(ClipAction action, bool force) => new
         {
             type = "clipboard",
+            action = action.ToString(),
             path = found,
             rel = found is null ? null : RelIfUnder(found),
             matches = found is null && matches.Count > 0 ? matches : null,
             files = files.Count > 0 ? FileItems(files) : null,
             more,
             hash,
-            deliberate,
-            fromSelf = ActiveForm == this,
+            fromSelf,
             force,
         };
-        if (Visible) { Post(Message(null)); return; }
-
-        // Hidden in the tray: the page is not there to decide, so follow the settings here. A passage
-        // that merely mentions a file is not worth a notification.
-        if (settings.Clip == "off" || !deliberate) return;
-        if (settings.Clip == "hint" || (files.Count > 0 && settings.ClipMulti == "list"))
+        var action = ClipboardPolicy.Decide(settings.Clip, settings.ClipMulti, deliberate, files.Count > 0, force: false);
+        if (action == ClipAction.None) return;
+        if (Visible)
         {
-            hintedClipboard = Message(true);
+            if (!fromSelf && ClipboardPolicy.Raises(action)) BringToTop(); // copied elsewhere: make sure the viewer is visible
+            Post(Message(action, false));
+            return;
+        }
+
+        // Hidden in the tray: a notification for what only offers, the window for what opens.
+        if (!ClipboardPolicy.Raises(action)) return;
+        if (ClipboardPolicy.Notifies(action))
+        {
+            hintedClipboard = Message(ClipboardPolicy.Decide(settings.Clip, settings.ClipMulti, deliberate, files.Count > 0, force: true), true);
             var (title, body) = files.Count > 0
                 ? ($"剪貼簿裡有{(more ? "超過 " : " ")}{files.Count} 個可以開啟的檔案", "點這裡選擇")
                 : ("剪貼簿裡有可以開啟的檔案", $"{Path.GetFileName(found ?? matches[0])}（點這裡開啟）");
             tray.ShowBalloonTip(6000, title, body, ToolTipIcon.None);
             return;
         }
-        PostWhenReady(Message(null));
+        PostWhenReady(Message(action, false));
         ShowFromTray(activate: false);
     }
 
@@ -831,32 +828,17 @@ sealed class MainForm : Form
     // keyboard focus from the app the user copied in.
     void BringToTop()
     {
-        const int SW_SHOWNOACTIVATE = 4;
-        if (WindowState == FormWindowState.Minimized) ShowWindow(Handle, SW_SHOWNOACTIVATE);
+        if (WindowState == FormWindowState.Minimized) Native.ShowWindow(Handle, Native.SW_SHOWNOACTIVATE);
         TopMost = true;
         TopMost = false;
     }
 
-    [DllImport("user32.dll")]
-    static extern bool ShowWindow(IntPtr hwnd, int command);
-
-
-    [DllImport("user32.dll")]
-    static extern bool AddClipboardFormatListener(IntPtr hwnd);
-
-    [DllImport("user32.dll")]
-    static extern uint GetClipboardSequenceNumber();
-
     // ---------- theme ----------
 
-    void ApplyTheme(string id)
+    // The window's own colours (background, title bar) for a theme id; "auto" follows Windows.
+    void UseTheme(string id)
     {
         theme = Themes.Resolve(id);
-        settings.Theme = id;
-        if (id != Themes.Auto)
-        {
-            if (theme.Dark) settings.LastDark = id; else settings.LastLight = id;
-        }
         BackColor = theme.Color("bg");
         if (web is not null) web.DefaultBackgroundColor = BackColor;
         ApplyTitleBar();
@@ -865,11 +847,8 @@ sealed class MainForm : Form
     void ApplyTitleBar()
     {
         var dark = theme.Dark ? 1 : 0;
-        DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int)); // immersive dark title bar
+        Native.DwmSetWindowAttribute(Handle, Native.DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
     }
-
-    [DllImport("dwmapi.dll")]
-    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
     // ---------- file watching ----------
 
@@ -967,6 +946,8 @@ sealed class MainForm : Form
                     lastLight = settings.LastLight,
                     lastDark = settings.LastDark,
                     systemDark = Themes.SystemIsDark(),
+                    appName = AppInfo.Name,
+                    autoTheme = Themes.Auto,
                     clip = settings.Clip,
                     clipChars = settings.ClipChars,
                     clipMulti = settings.ClipMulti,

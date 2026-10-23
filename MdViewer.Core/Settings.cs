@@ -7,15 +7,16 @@ namespace MdViewer;
 // is one write. The valid values of each option are defined here and nowhere else.
 public sealed class Settings
 {
-    static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MdViewer", "theme.txt");
+    static readonly string FilePath = Path.Combine(AppInfo.DataDir, "theme.txt");
 
     const int MaxDirs = 200;
     public const int MaxHistory = 30;
 
+    public const string ClipAuto = "auto", ClipHint = "hint", ClipOff = "off";
+    public const string MultiList = "list", MultiFirst = "first";
     public const string ClipModesTitle = "剪貼簿有 .md 或圖片路徑時";
-    public static readonly (string Id, string Label)[] ClipModes = [("auto", "自動開啟"), ("hint", "只提示"), ("off", "不理會")];
-    public static readonly (string Id, string Label)[] ClipMultiModes = [("list", "列出來讓我選"), ("first", "開第一個，並提示還有其他檔案")];
+    public static readonly (string Id, string Label)[] ClipModes = [(ClipAuto, "自動開啟"), (ClipHint, "只提示"), (ClipOff, "不理會")];
+    public static readonly (string Id, string Label)[] ClipMultiModes = [(MultiList, "列出來讓我選"), (MultiFirst, "開第一個，並提示還有其他檔案")];
     public const int MinClipMax = 2, MaxClipMax = 50;
 
     public event Action? Changed;
@@ -29,9 +30,9 @@ public sealed class Settings
     public string Root { get => root; set => Set(ref root, value); }
     public bool TrayHintShown { get => trayHintShown; set => Set(ref trayHintShown, value); } // the "still running in the tray" notice was shown
 
-    public string Clip { get; private set; } = "auto";     // clipboard paths: auto (open), hint, off
-    public int ClipChars { get; private set; } = 30;       // auto-open only with at most this many other characters
-    public string ClipMulti { get; private set; } = "list"; // several files copied: list them, or open the first
+    public string Clip { get; private set; } = ClipAuto;      // clipboard paths: open, hint or ignore
+    public int ClipChars { get; private set; } = 30;          // auto-open only with at most this many other characters
+    public string ClipMulti { get; private set; } = MultiList; // several files copied: list them, or open the first
     public int ClipMax { get; private set; } = 5;          // at most this many files in that list
 
     readonly List<string> dirs = [];
@@ -93,7 +94,7 @@ public sealed class Settings
     // Each folder is stored once (case-insensitive, trailing separator ignored); re-adding moves it to the front.
     public void RememberDir(string dir)
     {
-        try { dir = Path.GetFullPath(dir).TrimEnd('\\'); }
+        try { dir = Paths.NormalizeDir(dir); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { return; }
         if (dir.Length == 0 || (dirs.Count > 0 && dirs[0].Equals(dir, StringComparison.OrdinalIgnoreCase))) return;
         dirs.RemoveAll(d => d.Equals(dir, StringComparison.OrdinalIgnoreCase));
@@ -107,9 +108,11 @@ public sealed class Settings
         if (dirs.RemoveAll(gone.Contains) > 0) Changed?.Invoke();
     }
 
-    // Each file is stored once; reading it again moves it to the front and keeps its reading position.
+    // Each file is stored once; reading it again moves it to the front and keeps its reading position. Its
+    // folder is remembered too, for later copies of just a file name.
     public void RememberFile(string path)
     {
+        RememberDir(Path.GetDirectoryName(path)!);
         var scroll = FindFile(path)?.Scroll ?? 0;
         history.RemoveAll(h => h.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
         history.Insert(0, new HistoryEntry(path, DateTime.Now, scroll));

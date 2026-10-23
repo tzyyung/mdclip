@@ -52,7 +52,7 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
         try
         {
             if (!Path.IsPathFullyQualified(s))
-                return Path.GetFullPath(Path.Combine(root, s.TrimStart('\\'))) is var full && SafePath.FileExists(full) ? new(full, false) : null;
+                return Paths.FromRel(root, s) is var full && SafePath.FileExists(full) ? new(full, false) : null;
             if (!SafePath.Reachable(s)) return null;
             s = Path.GetFullPath(s);
             return File.Exists(s) ? new(s, false) : Directory.Exists(s) ? new(s, true) : null;
@@ -68,16 +68,38 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
 
     // The file the text names (Path), or failing that the root-relative files whose name or path tail
     // it matches (Matches: one means open it, several means let the user pick).
-    public (string? Path, List<string> Matches) Find(string text) => FindWithSource(text) is var f ? (f.Path, f.Matches) : default;
+    public (string? Path, List<string> Matches) Find(string text) => FindWithSource(Prepare(text)) is var f ? (f.Path, f.Matches) : default;
+
+    // A text prepared once for every lookup below: cut after its first MaxNames file names (a pasted log full
+    // of names stays quick), split into lines, with where each listed extension ends in each line.
+    sealed record Scan(string Text, string[] Lines, int[][] Ends);
+
+    const int MaxNames = 100;
+
+    static Scan Prepare(string text)
+    {
+        var lines = new List<string>();
+        var ends = new List<int[]>();
+        int names = 0;
+        foreach (var line in text.Split('\n'))
+        {
+            var lineEnds = ExtensionEnd.Matches(line).Take(MaxNames - names).Select(m => m.Index + m.Length).ToArray();
+            names += lineEnds.Length;
+            var full = names == MaxNames;
+            lines.Add(full ? line[..lineEnds[^1]] : line);
+            ends.Add(lineEnds);
+            if (full) break;
+        }
+        return new(string.Join('\n', lines), lines.ToArray(), ends.ToArray());
+    }
 
     // Find, plus the stretch of text that named the file (for telling a copied path from a passage).
-    (string? Path, List<string> Matches, string? Source) FindWithSource(string text)
+    (string? Path, List<string> Matches, string? Source) FindWithSource(Scan scan)
     {
-        text = Head(text);
-        var candidates = new[] { text }
-            .Concat(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            .Concat(SpacedCandidates(text))
-            .Concat(PathToken.Matches(text).SelectMany(m => TokenStarts(m.Value).Prepend(m.Value)))
+        var candidates = new[] { scan.Text }
+            .Concat(scan.Lines.Select(l => l.Trim()).Where(l => l.Length > 0))
+            .Concat(SpacedCandidates(scan))
+            .Concat(PathToken.Matches(scan.Text).SelectMany(m => TokenStarts(m.Value).Prepend(m.Value)))
             .ToList();
         CollectDirs(candidates);
         foreach (var candidate in candidates)
@@ -101,30 +123,20 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
     // One file named in a text, and the stretch of text that named it.
     public sealed record Hit(string Path, string Source);
 
-    // Only the part of a long text up to its first MaxNames listed extensions is looked at, so a pasted
-    // log full of file names stays quick.
-    const int MaxNames = 100;
-
-    static string Head(string text)
-    {
-        var m = ExtensionEnd.Match(text);
-        for (int n = 1; m.Success; n++, m = m.NextMatch())
-            if (n == MaxNames) return text[..(m.Index + m.Length)];
-        return text;
-    }
-
     // Every file the text names, in the order they appear, each once, stopping at max: for each listed
     // extension, the longest stretch ending there that is a real path, else a file name / path tail with
     // one match under the root or a match in a remembered folder. Names with several matches are left out.
-    public List<Hit> FindAll(string text, int max = 20)
+    public List<Hit> FindAll(string text, int max = 20) => FindAll(Prepare(text), max);
+
+    List<Hit> FindAll(Scan scan, int max)
     {
         var found = new List<Hit>();
-        foreach (var line in Head(text).Split('\n'))
+        for (int i = 0; i < scan.Lines.Length; i++)
         {
-            foreach (Match ext in ExtensionEnd.Matches(line))
+            foreach (var end in scan.Ends[i])
             {
                 if (found.Count == max) return found;
-                if (FileEndingAt(line, ext.Index + ext.Length) is { } hit && !found.Any(h => h.Path.Equals(hit.Path, StringComparison.OrdinalIgnoreCase)))
+                if (FileEndingAt(scan.Lines[i], end) is { } hit && !found.Any(h => h.Path.Equals(hit.Path, StringComparison.OrdinalIgnoreCase)))
                     found.Add(hit);
             }
         }
@@ -155,8 +167,9 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
 
     public Offer Analyze(string text, int maxExtra, int listLimit = 5)
     {
-        var (path, matches, source) = FindWithSource(text);
-        var all = FindAll(text, listLimit + 1);
+        var scan = Prepare(text);
+        var (path, matches, source) = FindWithSource(scan);
+        var all = FindAll(scan, listLimit + 1);
         if (all.Count > 1)
             return new(null, [], all.Take(listLimit).Select(h => h.Path).ToList(), all.Count > listLimit,
                 ExtraChars(text, all.Select(h => h.Source)) <= maxExtra);
@@ -177,12 +190,14 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
     // For each listed extension inside a sentence, the stretches that end there and contain a space,
     // longest first: "see C:\My Docs\a.md now" yields "see C:\My Docs\a.md", "C:\My Docs\a.md". Only
     // ones that exist are used.
-    public static IEnumerable<string> SpacedCandidates(string text)
+    public static IEnumerable<string> SpacedCandidates(string text) => SpacedCandidates(Prepare(text));
+
+    static IEnumerable<string> SpacedCandidates(Scan scan)
     {
-        foreach (var line in text.Split('\n'))
-            foreach (Match ext in ExtensionEnd.Matches(line))
-                foreach (var start in Starts(line, ext.Index + ext.Length))
-                    if (line[start..(ext.Index + ext.Length)] is var candidate && candidate.Any(char.IsWhiteSpace))
+        for (int i = 0; i < scan.Lines.Length; i++)
+            foreach (var end in scan.Ends[i])
+                foreach (var start in Starts(scan.Lines[i], end))
+                    if (scan.Lines[i][start..end] is var candidate && candidate.Any(char.IsWhiteSpace))
                         yield return candidate;
     }
 
@@ -195,18 +210,29 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
         {
             if (char.IsWhiteSpace(line[i])) continue;
             bool afterBreak = i == 0 || char.IsWhiteSpace(line[i - 1]) || line[i - 1] is '"' or '\'' or '`' or '(' || IsFullWidthMark(line[i - 1]);
-            bool drive = i + 2 < line.Length && char.IsAsciiLetter(line[i]) && line[i + 1] == ':' && line[i + 2] is '\\' or '/';
-            if (afterBreak || drive) starts.Add(i);
+            if (afterBreak || IsDriveAt(line, i)) starts.Add(i);
         }
         return starts.TakeLast(12);
     }
 
     static bool IsFullWidthMark(char c) => c is >= '\u3000' and <= '\u303F' or >= '\uFF00' and <= '\uFFEF';
 
+    // "E:\" or "E:/" starts at i.
+    static bool IsDriveAt(string s, int i) => i + 2 < s.Length && char.IsAsciiLetter(s[i]) && s[i + 1] == ':' && s[i + 2] is '\\' or '/';
+
     static string Tail(string candidate) => Unquote(candidate).Replace('\\', '/').TrimStart('.', '/');
 
-    List<string> NameMatches(string tail) => knownFiles.Where(rel => rel.Equals(tail, StringComparison.OrdinalIgnoreCase)
-        || rel.EndsWith("/" + tail, StringComparison.OrdinalIgnoreCase)).ToList();
+    // The known files that a file name or path tail names. They are grouped by file name once, so each name
+    // is looked up instead of being compared with every file.
+    ILookup<string, string>? byName;
+
+    List<string> NameMatches(string tail)
+    {
+        byName ??= knownFiles.ToLookup(rel => rel[(rel.LastIndexOf('/') + 1)..], StringComparer.OrdinalIgnoreCase);
+        return byName[tail[(tail.LastIndexOf('/') + 1)..]]
+            .Where(rel => rel.Equals(tail, StringComparison.OrdinalIgnoreCase) || rel.EndsWith("/" + tail, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
 
     // A token can have words glued to its front in Chinese text ("路徑：E:\docs\a.md", "請看E:\docs\a.md",
     // "「docs/a.md」"): also try it from each drive letter and from after each full-width punctuation mark.
@@ -214,9 +240,7 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
     {
         for (int i = 1; i < token.Length; i++)
         {
-            bool afterMark = IsFullWidthMark(token[i - 1]);
-            bool drive = i + 2 < token.Length && char.IsAsciiLetter(token[i]) && token[i + 1] == ':' && token[i + 2] is '\\' or '/';
-            if (afterMark || drive) yield return token[i..];
+            if (IsFullWidthMark(token[i - 1]) || IsDriveAt(token, i)) yield return token[i..];
         }
     }
 
@@ -241,7 +265,7 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
         {
             try
             {
-                var path = Path.GetFullPath(Path.Combine(dir, rel));
+                var path = Paths.FromRel(dir, rel);
                 if (SafePath.FileExists(path)) return path;
             }
             catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }
