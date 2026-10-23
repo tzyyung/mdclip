@@ -1055,6 +1055,7 @@ sealed class MainForm : Form
                     clipMultiModes = Settings.ClipMultiModes.Select(m => new { id = m.Id, label = m.Label }),
                     clipMaxRange = new[] { Settings.MinClipMax, Settings.MaxClipMax },
                     imageExtensions = ImageExtensions.Select(x => x[1..]),
+                    maxHistory = Settings.MaxHistory,
                     autoLight = Themes.AutoLight,
                     autoDark = Themes.AutoDark,
                     startScroll = TakeStartScroll(),
@@ -1240,8 +1241,9 @@ sealed class MainForm : Form
         <style>{{PageStyle.Value}}</style>
         """;
 
-    // Every theme's variables and the document stylesheet: the same for every page, so built once.
-    static readonly Lazy<string> PageStyle = new(() => Themes.Css + Resource("doc.css"));
+    // Every theme's variables, the styles shared with the app page and the document stylesheet: the same
+    // for every page, so built once.
+    static readonly Lazy<string> PageStyle = new(() => Themes.Css + Resource("common.css") + Resource("doc.css"));
 
     // The one table of content types: for files under the root and for the app's own resources.
     static readonly Dictionary<string, string> MimeTypes = new(StringComparer.OrdinalIgnoreCase)

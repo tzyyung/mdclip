@@ -21,7 +21,7 @@ a { color: var(--link); text-decoration: underline; text-decoration-color: color
     text-underline-offset: 3px; }
 a:hover { text-decoration-color: var(--link); }
 
-code { font-family: "Cascadia Mono", Consolas, "Microsoft JhengHei UI", monospace; font-size: .86em;
+code { font-family: var(--mono); font-size: .86em;
        color: var(--code-fg); background: var(--code-bg); padding: .12em .42em; border-radius: 4px; }
 pre { background: var(--pre-bg); border: 1px solid var(--border); border-left: 4px solid var(--h3);
       padding: 14px 18px; border-radius: 6px; overflow: auto; line-height: 1.5; }
@@ -54,22 +54,15 @@ ul.contains-task-list { list-style: none; padding-left: 1.2em; }
 .markdown-alert-tip { border-color: #1a9d6c; background: color-mix(in srgb, #1a9d6c 10%, transparent); }
 .markdown-alert-important { border-color: #8250df; background: color-mix(in srgb, #8250df 10%, transparent); }
 .markdown-alert-warning { border-color: #d4a017; background: color-mix(in srgb, #d4a017 12%, transparent); }
-.markdown-alert-caution { border-color: #d1453b; background: color-mix(in srgb, #d1453b 10%, transparent); }
+.markdown-alert-caution { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 
 img { max-width: 100%; border-radius: 4px; }
 main img { cursor: zoom-in; }
 hr { border: 0; height: 2px; background: linear-gradient(90deg, var(--accent), transparent); margin: 2.4em 0; }
 
-::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
-::-webkit-scrollbar { width: 12px; height: 12px; }
-::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg) 18%, transparent); border-radius: 12px;
-  border: 3px solid transparent; background-clip: content-box; }
-::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--fg) 32%, transparent); }
-::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 pre.plain { border-left-color: var(--border); white-space: pre; }
 .flash { animation: flash 1.2s ease-out; }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 22%, transparent); } }
-@media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
 
 /* code colours (highlight.js tokens), drawn from the theme so every palette gets its own */
 .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag, .hljs-meta .hljs-keyword { color: var(--h4); }
@@ -79,15 +72,15 @@ pre.plain { border-left-color: var(--border); white-space: pre; }
 .hljs-title.class_, .hljs-type, .hljs-built_in, .hljs-selector-class, .hljs-tag .hljs-name { color: var(--h1); }
 .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-property, .hljs-params { color: var(--em); }
 .hljs-comment, .hljs-quote, .hljs-meta { color: var(--muted); font-style: italic; }
-.hljs-deletion { color: #d1453b; }
+.hljs-deletion { color: var(--danger); }
 .hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 700; }
 
 /* Mermaid diagrams */
 .mermaid.figure { margin: 1.4em 0; padding: 16px; text-align: center; overflow: auto;
                   border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
 .mermaid.figure svg { max-width: 100%; height: auto; }
-.mermaid.figure.error { text-align: left; border-color: #d1453b; }
-.mermaid.figure .msg { color: #d1453b; font-weight: 600; margin-bottom: .6em; }
+.mermaid.figure.error { text-align: left; border-color: var(--danger); }
+.mermaid.figure .msg { color: var(--danger); font-weight: 600; margin-bottom: .6em; }
 
 /* find in page */
 ::highlight(find) { background-color: color-mix(in srgb, var(--mark) 70%, transparent); color: inherit; }
@@ -127,20 +120,20 @@ h1, h2, h3, h4 { position: relative; }
 }
 .frontmatter[open] summary::before { transform: rotate(45deg); }
 .frontmatter .fm-label { flex: none; font-weight: 600; }
-.frontmatter .fm-name { flex: none; color: var(--h3); font-weight: 600; font-family: "Cascadia Mono", Consolas, monospace; }
+.frontmatter .fm-name { flex: none; color: var(--h3); font-weight: 600; font-family: var(--mono); }
 .frontmatter .fm-desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .frontmatter[open] .fm-desc { display: none; }
 .frontmatter dl {
   display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .35em 1.4em; margin: 0;
   padding: .7em 1em .9em 2.1em; border-top: 1px solid var(--border);
 }
-.frontmatter dt { color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; }
+.frontmatter dt { color: var(--muted); font-family: var(--mono); font-size: .92em; }
 .frontmatter dd { margin: 0; overflow-wrap: anywhere; }
 
-/* printing (Export PDF) */
 /* Very large documents: off-screen blocks are not laid out until they come near the view. */
 body.big main > * { content-visibility: auto; contain-intrinsic-size: auto 2.5em; }
 
+/* printing (Export PDF): the hover buttons are left out here, not by the page */
 @media print {
   html, body { background: #fff; } /* the page margins are white paper; a tinted body would print as a band */
   main { max-width: none; padding: 0; }

@@ -104,14 +104,15 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 |---|---|
 | `MdViewer/Program.cs` | 進入點、只允許一個程式（第二次開啟會把路徑交給已開的視窗）、`--tray` / `--exit` |
 | `MdViewer/MainForm.cs` | 視窗、系統匣、剪貼簿監控、Markdown 轉 HTML（Markdig）、提供網頁內容給 WebView2 |
-| `MdViewer/Themes.cs` | 12 種主題的顏色 |
-| `MdViewer/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX |
+| `MdViewer/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX；`common.css` 是介面和文件頁共用的字型、顏色、捲軸 |
 | `MdViewer.Core/` | 不需要視窗的部分，程式和測試共用的函式庫： |
 | `　Paths.cs` | 哪些副檔名算文件、圖片，完整路徑和相對路徑互換（唯一的清單，網頁也從這裡拿） |
 | `　PathFinder.cs` | 從複製或貼上的文字找出要打開的檔案（剪貼簿、快速開啟共用） |
 | `　SafePath.cs` | 檢查檔案或資料夾在不在；網路磁碟沒回應時不會卡住（所有檢查都經過這裡） |
 | `　TextFiles.cs` | 讀檔與辨識編碼（顯示和全文搜尋共用） |
 | `　Settings.cs` | 設定檔的讀寫，以及每個選項的合法值（讀檔、網頁、系統匣選單都照這裡） |
+| `　Themes.cs` | 12 種主題的顏色，以及「跟隨系統」用的兩個主題 |
 | `MdViewer.Tests/` | `MdViewer.Core` 的單元測試，以及速度測試 |
 | `tools/make-icon.ps1` | 產生 `app.ico` |
+| `tools/viewer.ps1` | 讓 viewer 正常結束並等它關掉（`publish.ps1` 和測試共用） |
 | `tools/smoke-test.ps1`、`tools/smoke.mjs` | 自動化測試（含單元測試） |

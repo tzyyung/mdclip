@@ -13,7 +13,7 @@
   background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
   border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 28px color-mix(in srgb, #000 22%, transparent);
-  font: 13px/1 "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", sans-serif; color: var(--fg);
+  font: 13px/1 var(--ui); color: var(--fg);
   cursor: default;
 }
 .zoom-bar button {

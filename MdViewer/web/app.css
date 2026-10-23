@@ -1,7 +1,8 @@
-/* App chrome. Colors come from the active theme's variables (see Themes.cs). */
+/* App chrome. Colors come from the active theme's variables (see Themes.cs); fonts and shared rules
+   from common.css. --side-w and --toc-w are also the panels' default widths (app.js reads them). */
 :root {
   --side-w: 288px; --toc-w: 252px; --top-h: 48px;
-  --ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", sans-serif;
+  --backdrop: color-mix(in srgb, #000 30%, transparent);
   --chrome: color-mix(in srgb, var(--fg) 3.5%, var(--bg));
   --hover: color-mix(in srgb, var(--fg) 7%, transparent);
   --sel: color-mix(in srgb, var(--accent) 16%, transparent);
@@ -28,6 +29,11 @@ kbd {
   border-radius: 4px; color: var(--muted); background: var(--chrome); white-space: nowrap;
 }
 svg { display: block; }
+
+/* Everything that floats over the page: quick open, find, menus, panels. */
+.palette-box, .findbar, .menu, .help-box {
+  background: var(--bg); border: 1px solid var(--line); box-shadow: var(--shadow); animation: pop .12s ease-out;
+}
 
 /* ---------- panel visibility ---------- */
 body.no-side { --sw: 0px; }
@@ -185,12 +191,11 @@ body.dragging iframe { pointer-events: none; }
 /* ---------- quick open ---------- */
 .palette {
   position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; align-items: flex-start;
-  padding-top: 12vh; background: color-mix(in srgb, #000 28%, transparent);
+  padding-top: 12vh; background: var(--backdrop);
 }
 .palette-box {
   width: min(680px, calc(100vw - 32px)); max-height: 70vh; display: flex; flex-direction: column; overflow: hidden;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
-  animation: pop .12s ease-out;
+  border-radius: 12px;
 }
 @keyframes pop { from { opacity: 0; transform: translateY(-6px) scale(.985); } }
 .palette input {
@@ -205,7 +210,7 @@ body.dragging iframe { pointer-events: none; }
 .palette li.sel { background: var(--sel); }
 .palette li.sel .ico { color: var(--accent); }
 .palette li.hint { cursor: default; color: var(--muted); }
-.palette li.err { color: var(--td-strong); cursor: default; }
+.palette li.err { color: var(--danger); cursor: default; }
 .palette-foot {
   display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 8px 14px; flex: none;
   border-top: 1px solid var(--line); background: var(--chrome); color: var(--muted); font-size: 12px;
@@ -219,19 +224,16 @@ body.dragging iframe { pointer-events: none; }
 /* ---------- find in page ---------- */
 .findbar {
   position: absolute; top: 10px; right: 24px; z-index: 5;
-  display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 10px;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow);
-  animation: pop .1s ease-out;
+  display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 10px; border-radius: 9px;
 }
 .findbar input { width: 210px; height: 28px; border: 0; outline: none; background: none; color: var(--fg); font: inherit; }
 .findbar .count { min-width: 56px; padding: 0 6px; color: var(--muted); font-size: 12.5px; text-align: right; white-space: nowrap; }
-.findbar.none .count { color: #d1453b; }
+.findbar.none .count { color: var(--danger); }
 
 /* ---------- menus ---------- */
 .menu {
   position: fixed; z-index: 40; min-width: 240px; max-height: calc(100vh - 70px); overflow: auto; padding: 6px;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
-  animation: pop .1s ease-out;
+  border-radius: 10px;
 }
 .menu .label { font-size: 12px; color: var(--muted); padding: 8px 10px 4px; }
 .menu button {
@@ -253,7 +255,6 @@ body.dragging iframe { pointer-events: none; }
 .menu .empty { padding: 10px; color: var(--muted); font-size: 13px; }
 .sw { display: flex; flex: none; border-radius: 4px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
 .sw i { width: 10px; height: 18px; }
-.sw.auto i:first-child { background: #ffffff; } .sw.auto i:last-child { background: #14181f; }
 
 /* ---------- image lightbox ---------- */
 .lightbox {
@@ -291,19 +292,6 @@ body.dragging iframe { pointer-events: none; }
 .toast .x:hover { opacity: 1; background: color-mix(in srgb, var(--bg) 18%, transparent); }
 .toast .x svg { width: 14px; height: 14px; }
 
-/* ---------- scrollbars ---------- */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--fg) 16%, transparent); border-radius: 10px;
-  border: 2px solid transparent; background-clip: content-box;
-}
-::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--fg) 30%, transparent); }
-::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
-}
-
 /* ---------- drag and drop ---------- */
 .drop {
   position: fixed; inset: 0; z-index: 70; display: grid; place-items: center;
@@ -340,11 +328,8 @@ body { --tabs-h: 36px; }
 .tab-new svg { width: 15px; height: 15px; }
 
 /* ---------- help ---------- */
-.help { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .35); }
-.help-box {
-  width: min(860px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); animation: pop .12s ease-out;
-}
+.help { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; padding: 16px; background: var(--backdrop); }
+.help-box { width: min(860px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; border-radius: 12px; }
 .help-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
 .help-head h2 { margin: 0; font-size: 16px; }
 .help-body { overflow: auto; padding: 6px 18px 18px; columns: 2 360px; column-gap: 28px; }
@@ -366,5 +351,4 @@ body { --tabs-h: 36px; }
   width: 64px; padding: 3px 6px; font: inherit; text-align: right; color: var(--fg);
   background: var(--chrome); border: 1px solid var(--line); border-radius: 6px;
 }
-.clipset-body input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .clipset-body .note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }

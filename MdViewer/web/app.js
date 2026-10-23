@@ -131,8 +131,11 @@ const toggleDark = () => applyTheme(resolveTheme(state.theme).dark ? state.lastL
 
 // ---------- layout: sidebar, outline, focus mode ----------
 
+// The panels' default widths are app.css's --side-w and --toc-w.
+const rootStyle = getComputedStyle(document.documentElement);
+const defaultWidths = { sideW: parseInt(rootStyle.getPropertyValue("--side-w")), tocW: parseInt(rootStyle.getPropertyValue("--toc-w")) };
 const layout = Object.assign(
-  { side: true, toc: true, zen: false, sideW: 288, tocW: 252, kind: "all", zoom: 1, clip: "auto" },
+  { side: true, toc: true, zen: false, ...defaultWidths, kind: "all", zoom: 1, clip: "auto" },
   store.get("layout", {}), { clip: cfg.clip ?? "auto" }); // the host owns the clipboard mode (the tray menu sets it too)
 // Also the host's: how many other characters may come with a path for it to open by itself, and what
 // to do when one copy names several files ("list" them, or open the "first").
@@ -203,10 +206,10 @@ function setupPeek(hotId, panel, cls) {
 // The file tree's width is measured from the left edge, the outline's from the right; double-click resets.
 function setupResizer() {
   const bars = [
-    { bar: $("resizer"), key: "sideW", prop: "--side-w", reset: 288, min: 200, width: (x) => x },
-    { bar: $("resizer-toc"), key: "tocW", prop: "--toc-w", reset: 252, min: 180, width: (x) => innerWidth - x },
+    { bar: $("resizer"), key: "sideW", prop: "--side-w", min: 200, width: (x) => x },
+    { bar: $("resizer-toc"), key: "tocW", prop: "--toc-w", min: 180, width: (x) => innerWidth - x },
   ];
-  for (const { bar, key, prop, reset, min, width } of bars) {
+  for (const { bar, key, prop, min, width } of bars) {
     bar.addEventListener("mousedown", (e) => {
       e.preventDefault();
       body.classList.add("dragging");
@@ -225,7 +228,7 @@ function setupResizer() {
       addEventListener("mousemove", move);
       addEventListener("mouseup", up);
     });
-    bar.addEventListener("dblclick", () => { layout[key] = reset; applyLayout(); });
+    bar.addEventListener("dblclick", () => { layout[key] = defaultWidths[key]; applyLayout(); });
   }
 }
 
@@ -940,7 +943,7 @@ const HELP = [
     ["Ctrl+P", "快速開啟：輸入檔名、貼上路徑，或用 # 跳到本篇標題"],
     ["Ctrl+Shift+F", "搜尋這個資料夾所有文件的內文"],
     ["Ctrl+F", "在本篇中尋找（Enter / Shift+Enter 或 F3 切換）"],
-    ["Ctrl+H", "閱讀紀錄（最近 30 個檔案，回到上次讀到的位置）"],
+    ["Ctrl+H", `閱讀紀錄（最近 ${cfg.maxHistory} 個檔案，回到上次讀到的位置）`],
     ["Ctrl+O · Ctrl+Shift+O", "開啟檔案 · 開啟資料夾"],
     ["拖曳", "把檔案或資料夾拖到視窗上就打開"],
   ]],
@@ -1256,7 +1259,6 @@ async function exportPdf() {
   if (paper.id !== now.id) { doc.documentElement.dataset.theme = paper.id; await renderDiagrams(doc); }
   const page = doc.documentElement.cloneNode(true);
   if (paper.id !== now.id) { doc.documentElement.dataset.theme = now.id; renderDiagrams(doc); }
-  page.querySelectorAll(".copy-code, .h-anchor").forEach((el) => el.remove());
   page.querySelectorAll(".flash").forEach((el) => el.classList.remove("flash"));
   page.querySelector("body").style.zoom = "";
   page.querySelectorAll(".frontmatter").forEach((el) => { el.open = true; });
@@ -1370,7 +1372,7 @@ function openThemeMenu() {
   const row = (t) => `<button data-theme="${t.id}"><span class="sw"><i style="background:${t.bg}"></i><i style="background:${t.accent}"></i><i style="background:${t.h3}"></i></span><span>${esc(t.name)}</span>${check(t.id)}</button>`;
   const menu = $("theme-menu");
   menu.innerHTML =
-    `<button data-theme="auto"><span class="sw auto"><i></i><i></i></span><span>跟隨系統</span>${check("auto")}</button>` +
+    `<button data-theme="auto"><span class="sw"><i style="background:${themeById[cfg.autoLight].bg}"></i><i style="background:${themeById[cfg.autoDark].bg}"></i></span><span>跟隨系統</span>${check("auto")}</button>` +
     `<div class="label">亮色</div>${cfg.themes.filter((t) => !t.dark).map(row).join("")}` +
     `<div class="label">暗色</div>${cfg.themes.filter((t) => t.dark).map(row).join("")}`;
   showMenu(menu, $("theme"));
@@ -1415,7 +1417,7 @@ function openHistoryMenu() {
       `${icon(fileIcon(h.path))}<span class="hn"><span class="t">${esc(nameOf(h.path))}</span><span class="s">${esc(h.exists ? dirLabel(h.path) : "檔案已不存在")}</span></span>` +
       `<span class="tail">${ago(h.when)}</span></button>`;
   });
-  menu.innerHTML = `<div class="label">最近讀過的檔案（最多 30 個）</div>` +
+  menu.innerHTML = `<div class="label">最近讀過的檔案（最多 ${cfg.maxHistory} 個）</div>` +
     (rows.length ? rows.join("") + `<hr><button data-hist="clear">${icon("close")}<span>清除紀錄</span></button>` : `<div class="empty">還沒有讀過的檔案</div>`);
   showMenu(menu, $("history"));
 }

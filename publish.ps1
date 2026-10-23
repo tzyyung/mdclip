@@ -5,12 +5,8 @@
 param([switch]$SelfContained)
 $ErrorActionPreference = 'Stop'
 
-$running = Get-Process MdViewer -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($running) {
-    $exe = $running.Path
-    & $exe --exit
-    if (-not $running.WaitForExit(10000)) { throw 'MdViewer did not quit; exit it from its tray icon menu and run this again.' }
-}
+. (Join-Path $PSScriptRoot 'tools\viewer.ps1')
+$exe = Stop-Viewer # the exe that was running, to start again afterwards
 
 $out = Join-Path $PSScriptRoot $(if ($SelfContained) { 'dist' } else { 'app' })
 $publishArgs = @(
@@ -24,4 +20,4 @@ if ($SelfContained) { $publishArgs += '-p:EnableCompressionInSingleFile=true' }
 & dotnet @publishArgs
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed ($LASTEXITCODE)" }
 Write-Host "Built $(Join-Path $out 'MdViewer.exe')"
-if ($running -and -not $SelfContained) { Start-Process $exe }
+if ($exe -and -not $SelfContained) { Start-Process $exe }

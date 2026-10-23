@@ -20,7 +20,7 @@ public sealed class Settings
 
     public event Action? Changed;
 
-    string theme = "auto", lastLight = "colorful-light", lastDark = "github-dark", root = "";
+    string theme = Themes.Auto, lastLight = Themes.AutoLight, lastDark = Themes.AutoDark, root = "";
     bool trayHintShown;
 
     public string Theme { get => theme; set => Set(ref theme, value); }

@@ -28,14 +28,7 @@ $settings = Join-Path $env:LOCALAPPDATA 'MdViewer\theme.txt'
 dotnet test (Join-Path $repo 'MdViewer.Tests') --nologo -v q
 if ($LASTEXITCODE -ne 0) { throw 'unit tests failed' }
 
-function Get-Viewer { Get-Process MdViewer -ErrorAction SilentlyContinue | Select-Object -First 1 }
-
-function Stop-Viewer {
-    $p = Get-Viewer
-    if (-not $p) { return }
-    & $exe --exit
-    if (-not $p.WaitForExit(10000)) { throw 'MdViewer did not quit' }
-}
+. (Join-Path $PSScriptRoot 'viewer.ps1') # Get-Viewer, Stop-Viewer
 
 function Get-MainWindow {
     $p = Get-Viewer
@@ -62,7 +55,7 @@ function Report($name, $ok, $detail = '') {
 $wasRunning = [bool](Get-Viewer)
 $lastFile = (Get-Content $settings -ErrorAction SilentlyContinue | Where-Object { $_ -like 'hist=*' } | Select-Object -First 1) -replace '^hist=[^|]*\|(\d+\|)?', ''
 
-Stop-Viewer
+$null = Stop-Viewer
 $clip = [Windows.Forms.Clipboard]::GetDataObject()
 $saved = New-Object Windows.Forms.DataObject
 foreach ($format in $clip.GetFormats($false)) { try { $saved.SetData($format, $clip.GetData($format)) } catch { } }
@@ -89,12 +82,12 @@ try {
     for ($i = 0; $i -lt 30 -and -not $shown; $i++) { Start-Sleep -Milliseconds 300; $shown = [Smoke.Win]::IsWindowVisible($window) }
     Report 'clipboard path brings the window back' $shown
 
-    Stop-Viewer
+    $null = Stop-Viewer
     Report '--exit quits' (-not (Get-Viewer))
 }
 finally {
     Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, Env:SMOKE_ONLY, Env:SMOKE_REPEAT -ErrorAction SilentlyContinue
-    if (Get-Viewer) { Stop-Viewer }
+    $null = Stop-Viewer
     [Windows.Forms.Clipboard]::SetDataObject($saved, $true)
     # keep the fixtures out of the user's reading history and remembered folders
     if (Test-Path $settings) {

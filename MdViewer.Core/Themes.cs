@@ -1,17 +1,18 @@
+using System.Drawing;
 using System.Text.RegularExpressions;
 
 namespace MdViewer;
 
-// Page palettes. Each theme only sets CSS variables; MainForm's stylesheet consumes them.
+// Page palettes. Each theme only sets CSS variables; the app's stylesheets consume them.
 // Colors follow each project's published palette (GitHub Primer, draculatheme.com, nordtheme.com, ...).
-sealed record Theme(string Id, string Name, bool Dark, string Vars)
+public sealed record Theme(string Id, string Name, bool Dark, string Vars)
 {
     public string Hex(string name) => Regex.Match(Vars, $@"--{name}:\s*(#[0-9a-fA-F]{{6}})").Groups[1].Value;
 
     public Color Color(string name) => ColorTranslator.FromHtml(Hex(name));
 }
 
-static class Themes
+public static class Themes
 {
     public const string Auto = "auto";
     // The pair "auto" switches between with Windows' light/dark setting (the web page is told these too).
