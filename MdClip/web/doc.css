@@ -79,6 +79,7 @@ pre.plain { border-left-color: var(--border); white-space: pre; }
 .mermaid.figure { margin: 1.4em 0; padding: 16px; text-align: center; overflow: auto;
                   border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
 .mermaid.figure svg { max-width: 100%; height: auto; }
+.mermaid.figure:has(> svg) { cursor: zoom-in; }
 .mermaid.figure.error { text-align: left; border-color: var(--danger); }
 .mermaid.figure .msg { color: var(--danger); font-weight: 600; margin-bottom: .6em; }
 

@@ -121,6 +121,30 @@ await check("mermaid diagram is drawn", async () => {
   await waitFor("frame.contentDocument.querySelector('.mermaid.figure svg')", 8000);
 });
 
+// The picture viewer in a page: its picture names, which one is shown, and whether that one loaded.
+const viewerState = (scope) => `(async () => {
+  const host = ${scope};
+  const img = host.querySelector(".pic-stage img");
+  if (!img.complete) await new Promise((r) => img.addEventListener("load", r, { once: true }));
+  return { name: host.querySelector(".pic-name").textContent, count: host.querySelector(".pic-count").textContent, width: img.naturalWidth };
+})()`;
+const key = (k) => `document.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, bubbles: true }))`;
+
+await check("clicking a diagram opens it in the picture window", async () => {
+  await js("frame.contentDocument.querySelector('.mermaid.figure svg').dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+  const target = await findPage("pictures.html", 8000);
+  expect(target, "no picture window");
+  const win = await connect(target);
+  try {
+    await sleep(500);
+    const seen = await win.js(viewerState("document.getElementById('pictures')"));
+    expect(seen.name === "流程圖 1" && seen.width > 0, "window shows " + JSON.stringify(seen));
+    await win.js(key("Escape"));
+  } finally { win.close(); }
+  await sleep(800);
+  expect(!(await findPage("pictures.html", 500)), "Esc did not close the window");
+});
+
 await check("math is typeset", async () => {
   await waitFor("frame.contentDocument.querySelectorAll('.katex').length >= 2", 8000);
   return await js("frame.contentDocument.querySelectorAll('.katex').length") + " formulas";
@@ -159,15 +183,6 @@ await check("heading link copies and reopens at the heading", async () => {
   const top = await js("Math.round(frame.contentDocument.getElementById('公式').getBoundingClientRect().top)");
   expect(top >= 0 && top < 120, "heading is at " + top + "px");
 });
-
-// The picture viewer in a page: its picture names, which one is shown, and whether that one loaded.
-const viewerState = (scope) => `(async () => {
-  const host = ${scope};
-  const img = host.querySelector(".pic-stage img");
-  if (!img.complete) await new Promise((r) => img.addEventListener("load", r, { once: true }));
-  return { name: host.querySelector(".pic-name").textContent, count: host.querySelector(".pic-count").textContent, width: img.naturalWidth };
-})()`;
-const key = (k) => `document.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, bubbles: true }))`;
 
 await check("pictures: a copied picture opens in the picture window; dock and pop out", async () => {
   const page = await js("state.current");

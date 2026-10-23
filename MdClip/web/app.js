@@ -521,7 +521,7 @@ function hookDoc(doc) {
   listenTo(doc, { zoomWheel: !isImagePage(doc) });
   doc.addEventListener("mousedown", closeMenus);
   doc.addEventListener("click", (e) => {
-    const pic = e.target.closest("main img");
+    const pic = e.target.closest("main img") ?? e.target.closest(".mermaid.figure")?.querySelector(":scope > svg");
     if (pic && !e.target.closest("a")) { e.preventDefault(); showDocPictures(doc, pic); return; }
     const a = e.target.closest("a[href]");
     if (!a || e.defaultPrevented) return;
@@ -1519,13 +1519,26 @@ function showPictures(items, start = 0) {
   setPicturePane(true);
 }
 
-// The pictures of the open document, starting at the one clicked.
+// The pictures and drawn diagrams of the open document, in page order, starting at the one clicked.
 function showDocPictures(doc, pic) {
-  const imgs = [...doc.querySelectorAll("main img")];
-  showPictures(imgs.map((img) => {
-    const src = img.currentSrc || img.src;
-    return { src, name: img.alt || decodeURIComponent(src.split("?")[0].split("/").pop()) };
-  }), Math.max(0, imgs.indexOf(pic)));
+  const shown = [...doc.querySelectorAll("main img, .mermaid.figure > svg")];
+  let diagrams = 0;
+  showPictures(shown.map((el) => {
+    if (el.tagName !== "IMG") return { src: diagramPicture(el), name: `流程圖 ${++diagrams}` };
+    const src = el.currentSrc || el.src;
+    return { src, name: el.alt || decodeURIComponent(src.split("?")[0].split("/").pop()) };
+  }), Math.max(0, shown.indexOf(pic)));
+}
+
+// A drawn diagram as a picture: its SVG at its own size (Mermaid draws it 100% wide), on the page's background.
+function diagramPicture(drawn) {
+  const svg = drawn.cloneNode(true), box = svg.viewBox.baseVal;
+  svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  svg.setAttribute("width", Math.ceil(box.width));
+  svg.setAttribute("height", Math.ceil(box.height));
+  svg.style.maxWidth = "";
+  svg.style.background = drawn.ownerDocument.defaultView.getComputedStyle(drawn.parentNode).backgroundColor;
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(svg));
 }
 
 function setPicturePane(open) {
