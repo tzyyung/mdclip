@@ -1,4 +1,4 @@
-/* Image viewer (zoom.js), used by image pages and the app's lightbox. */
+/* Image viewer (zoom.js), used by image pages and the picture viewer (pictures.js). */
 .zoom-stage { position: relative; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
 .zoom-stage.grabbing { cursor: grabbing; }
 .zoom-stage > img {

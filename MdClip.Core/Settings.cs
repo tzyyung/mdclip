@@ -21,14 +21,16 @@ public sealed class Settings
 
     public event Action? Changed;
 
-    string theme = Themes.Auto, lastLight = Themes.AutoLight, lastDark = Themes.AutoDark, root = "";
-    bool trayHintShown;
+    string theme = Themes.Auto, lastLight = Themes.AutoLight, lastDark = Themes.AutoDark, root = "", pictureWindow = "";
+    bool trayHintShown, pictureDock;
 
     public string Theme { get => theme; set => Set(ref theme, value); }
     public string LastLight { get => lastLight; set => Set(ref lastLight, value); }
     public string LastDark { get => lastDark; set => Set(ref lastDark, value); }
     public string Root { get => root; set => Set(ref root, value); }
     public bool TrayHintShown { get => trayHintShown; set => Set(ref trayHintShown, value); } // the "still running in the tray" notice was shown
+    public bool PictureDock { get => pictureDock; set => Set(ref pictureDock, value); } // pictures in a pane of the main window, not their own
+    public string PictureWindow { get => pictureWindow; set => Set(ref pictureWindow, value); } // where it was: "x,y,width,height"
 
     public string Clip { get; private set; } = ClipAuto;      // clipboard paths: open, hint or ignore
     public int ClipChars { get; private set; } = 30;          // auto-open only with at most this many other characters
@@ -65,6 +67,8 @@ public sealed class Settings
                     case "clipmulti": s.SetClipMulti(value); break;
                     case "clipmax" when int.TryParse(value, out var max): s.SetClipMax(max); break;
                     case "trayhint": s.trayHintShown = value == "1"; break;
+                    case "picdock": s.pictureDock = value == "1"; break;
+                    case "picwin": s.pictureWindow = value; break;
                     case "dir" when value.Length > 0: s.dirs.Add(value); break;
                     case "hist" when HistoryEntry.Parse(value) is { } h: s.history.Add(h); break;
                 }
@@ -85,6 +89,7 @@ public sealed class Settings
             File.WriteAllLines(temp,
                 [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", $"clip={Clip}", $"clipchars={ClipChars}",
                  $"clipmulti={ClipMulti}", $"clipmax={ClipMax}", $"trayhint={(TrayHintShown ? 1 : 0)}",
+                 $"picdock={(PictureDock ? 1 : 0)}", $"picwin={PictureWindow}",
                  .. dirs.Select(d => $"dir={d}"), .. history.Select(h => $"hist={h}")]);
             File.Move(temp, FilePath, overwrite: true);
         }

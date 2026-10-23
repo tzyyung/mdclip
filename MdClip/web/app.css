@@ -1,7 +1,7 @@
 /* App chrome. Colors come from the active theme's variables (see Themes.cs); fonts and shared rules
-   from common.css. --side-w and --toc-w are also the panels' default widths (app.js reads them). */
+   from common.css. --side-w, --toc-w and --pic-w are also the panels' default widths (app.js reads them). */
 :root {
-  --side-w: 288px; --toc-w: 252px; --top-h: 48px;
+  --side-w: 288px; --toc-w: 252px; --pic-w: 520px; --top-h: 48px;
   --backdrop: color-mix(in srgb, #000 30%, transparent);
   --chrome: color-mix(in srgb, var(--fg) 3.5%, var(--bg));
   --hover: color-mix(in srgb, var(--fg) 7%, transparent);
@@ -13,11 +13,11 @@
 [hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
 body {
-  --sw: var(--side-w); --tw: var(--toc-w); --th: var(--top-h);
+  --sw: var(--side-w); --tw: var(--toc-w); --pw: 0px; --th: var(--top-h);
   display: grid;
   grid-template-rows: var(--th) minmax(0, 1fr);
-  grid-template-columns: var(--sw) 0 minmax(0, 1fr) 0 var(--tw);
-  grid-template-areas: "top top top top top" "side rez doc rez-toc toc";
+  grid-template-columns: var(--sw) 0 minmax(0, 1fr) 0 var(--pw) 0 var(--tw);
+  grid-template-areas: "top top top top top top top" "side rez doc rez-pic pic rez-toc toc";
   background: var(--bg); color: var(--fg);
   font: 13.5px/1.5 var(--ui);
   overflow: hidden;
@@ -30,10 +30,6 @@ kbd {
 }
 svg { display: block; }
 
-/* Buttons drawn as plain icons or text: no border or background of their own. */
-.icon, .zoom .pct, .crumbs button, .kinds button, .menu button, .toast .x, .tab .x, .tab-new {
-  border: 0; background: none; cursor: pointer;
-}
 /* The small icon buttons: close on toasts and tabs, new tab. */
 .toast .x, .tab .x, .tab-new { flex: none; display: grid; place-items: center; padding: 0; }
 
@@ -263,20 +259,18 @@ body.dragging iframe { pointer-events: none; }
 .sw { display: flex; flex: none; border-radius: 4px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
 .sw i { width: 10px; height: 18px; }
 
-/* ---------- image lightbox ---------- */
-.lightbox {
-  position: fixed; inset: 0; z-index: 55;
-  background: color-mix(in srgb, var(--bg) 78%, #000); animation: peek .12s ease-out;
+/* ---------- picture pane (pictures docked in the main window) ---------- */
+body.has-pic { --pw: var(--pic-w); }
+.pic-pane { grid-area: pic; border-left: 1px solid var(--line); }
+.pic-pane:focus { outline: none; }
+#resizer-pic { grid-area: rez-pic; display: none; }
+.has-pic #resizer-pic { display: block; }
+/* While the picture window is dragged over the main window: where letting go docks it. */
+.dock-hint { position: fixed; top: var(--th); right: 0; bottom: 0; width: min(40vw, 560px); z-index: 70; padding: 12px; pointer-events: none; }
+.dock-box {
+  height: 100%; display: grid; place-items: center; border: 2px dashed var(--accent); border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: 16px; font-weight: 600;
 }
-.lightbox .zoom-stage { position: absolute; inset: 0; }
-.lightbox .icon {
-  position: absolute; z-index: 3; width: 40px; height: 40px; border-radius: 50%;
-  background: color-mix(in srgb, var(--bg) 85%, transparent); border: 1px solid var(--line); color: var(--fg);
-}
-.lightbox .icon svg { width: 20px; height: 20px; }
-.lightbox .lb-close { top: 16px; right: 16px; }
-.lightbox .lb-prev { left: 16px; top: 50%; transform: translateY(-50%); }
-.lightbox .lb-next { right: 16px; top: 50%; transform: translateY(-50%); }
 
 /* ---------- toast ---------- */
 .toast {

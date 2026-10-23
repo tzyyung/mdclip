@@ -13,32 +13,42 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- CDP ----------
 
-let page;
-for (let i = 0; i < 40 && !page; i++) {
-  try {
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
-    page = targets.find((t) => t.type === "page" && t.url.includes("md.view/__app"));
-  } catch { /* not up yet */ }
-  if (!page) await sleep(500);
+// The first page whose URL contains `part`, waiting up to ms for it to appear.
+async function findPage(part, ms = 20000) {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(300)) {
+    try {
+      const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+      const page = targets.find((t) => t.type === "page" && t.url.includes(part));
+      if (page) return page;
+    } catch { /* not up yet */ }
+  }
+  return null;
 }
-if (!page) { console.log("FAIL  viewer page not found on port " + port); process.exit(1); }
 
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener("open", r, { once: true }));
-let seq = 0;
-const pending = new Map();
-ws.addEventListener("message", (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-});
-const send = (method, params = {}) => new Promise((r) => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
-
-// Evaluates an expression (or an async IIFE body) in the app page and returns its value.
-async function js(expr) {
-  const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? "script error");
-  return r.result?.result?.value;
+// A connection to one page: send(method, params) and js(expression) -> its value (async IIFEs too).
+async function connect(page) {
+  const socket = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((r) => socket.addEventListener("open", r, { once: true }));
+  let seq = 0;
+  const pending = new Map();
+  socket.addEventListener("message", (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+  });
+  const send = (method, params = {}) => new Promise((r) => { const id = ++seq; pending.set(id, r); socket.send(JSON.stringify({ id, method, params })); });
+  const js = async (expr) => {
+    const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
+    if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? "script error");
+    return r.result?.result?.value;
+  };
+  return { send, js, close: () => socket.close() };
 }
+
+const appPage = await findPage("md.view/__app/");
+if (!appPage) { console.log("FAIL  viewer page not found on port " + port); process.exit(1); }
+const app = await connect(appPage);
+const { send, js } = app;
+const ws = { close: app.close };
 
 async function waitFor(expr, ms = 5000) {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) {
@@ -150,19 +160,50 @@ await check("heading link copies and reopens at the heading", async () => {
   expect(top >= 0 && top < 120, "heading is at " + top + "px");
 });
 
-await check("clipboard: a copied picture is previewed over the page", async () => {
+// The picture viewer in a page: its picture names, which one is shown, and whether that one loaded.
+const viewerState = (scope) => `(async () => {
+  const host = ${scope};
+  const img = host.querySelector(".pic-stage img");
+  if (!img.complete) await new Promise((r) => img.addEventListener("load", r, { once: true }));
+  return { name: host.querySelector(".pic-name").textContent, count: host.querySelector(".pic-count").textContent, width: img.naturalWidth };
+})()`;
+const key = (k) => `document.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, bubbles: true }))`;
+
+await check("pictures: a copied picture opens in the picture window; dock and pop out", async () => {
   const page = await js("state.current");
   setClipboard(path.join(fixtures, "pics", "dot.png"));
-  await waitFor("!$('lightbox').hidden", 5000);
-  expect(await js("state.current") === page, "the page changed");
-  const names = await js("lb.items.map(p => p.name).join(',')");
-  expect(names === "dot.png,evil.svg" && await js("lb.i") === 0, "pictures: " + names);
-  const loaded = await js("new Promise(r => { const img = $('lightbox').querySelector('img'); img.complete ? r(img.naturalWidth) : img.onload = () => r(img.naturalWidth); })");
-  expect(loaded > 0, "the picture did not load");
-  await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))`);
-  expect(await js("lb.i") === 1, "→ did not move to the next picture");
-  await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
-  expect(await js("$('lightbox').hidden"), "Esc did not close it");
+  const target = await findPage("pictures.html", 8000);
+  expect(target, "no picture window");
+  const win = await connect(target);
+  try {
+    await sleep(500);
+    let seen = await win.js(viewerState("document.getElementById('pictures')"));
+    expect(seen.name === "dot.png" && seen.count === "1 / 2" && seen.width > 0, "window shows " + JSON.stringify(seen));
+    expect(await js("state.current") === page, "the document changed");
+    await win.js(key("ArrowRight"));
+    seen = await win.js(viewerState("document.getElementById('pictures')"));
+    expect(seen.name === "evil.svg", "→ showed " + seen.name);
+
+    // its "停靠到主視窗" button: the pane takes over at the same picture
+    await win.js("document.querySelector('.pic-act').click()");
+    await waitFor("!$('pic-pane').hidden && document.body.classList.contains('has-pic')", 5000);
+    seen = await js(viewerState("$('pic-pane')"));
+    expect(seen.name === "evil.svg", "pane shows " + seen.name);
+    await js(`$('pic-pane').focus(); ${key("ArrowLeft")}`);
+    expect((await js(viewerState("$('pic-pane')"))).name === "dot.png", "← in the pane");
+  } finally { win.close(); }
+
+  // the pane's "彈出": back to a window
+  await js("$('pic-pane').querySelector('.pic-act').click()");
+  await waitFor("$('pic-pane').hidden && !layout.picDock", 5000);
+  const again = await findPage("pictures.html", 8000);
+  expect(again, "no picture window after 彈出");
+  const win2 = await connect(again);
+  await sleep(500);
+  await win2.js(key("Escape"));
+  win2.close();
+  await sleep(800);
+  expect(!(await findPage("pictures.html", 500)), "Esc did not close the window");
 });
 
 await check("clipboard: bare file name opens", async () => {

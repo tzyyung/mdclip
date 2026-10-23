@@ -1,5 +1,5 @@
 "use strict";
-// Wheel-zoom / drag-pan image viewer, shared by image pages and the app's lightbox.
+// Wheel-zoom / drag-pan image viewer, shared by image pages and the picture viewer (pictures.js).
 // mdZoom(stage, img, { label }) -> { fit, key(e) -> handled, destroy }
 window.mdZoom = function (stage, img, options = {}) {
   const MIN = 0.02, MAX = 40, PAD = 40;

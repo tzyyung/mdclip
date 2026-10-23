@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="common.css">
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="zoom.css">
+<link rel="stylesheet" href="pictures.css">
 </head>
 <body>
 <header class="topbar">
@@ -72,6 +73,8 @@
   </div>
 </main>
 
+<div class="resizer" id="resizer-pic" title="拖曳調整寬度，雙擊恢復"></div>
+<section class="pic-pane" id="pic-pane" aria-label="圖片" tabindex="-1" hidden></section>
 <div class="resizer" id="resizer-toc" title="拖曳調整寬度，雙擊恢復"></div>
 <aside class="toc" id="toc" aria-label="本篇大綱">
   <div class="toc-head">本篇大綱</div>
@@ -92,7 +95,7 @@
 <div class="menu" id="theme-menu" hidden></div>
 <div class="menu" id="more-menu" hidden></div>
 <div class="menu" id="history-menu" hidden></div>
-<div class="lightbox" id="lightbox" role="dialog" aria-label="圖片檢視" hidden></div>
+<div class="dock-hint" id="dock-hint" hidden><div class="dock-box">放開以停靠在右側</div></div>
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="help" id="help" role="dialog" aria-label="快捷鍵與功能" hidden>
   <div class="help-box">
@@ -127,6 +130,7 @@
 <script>/*CONFIG*/</script>
 <script src="hljs.min.js"></script>
 <script src="zoom.js"></script>
+<script src="pictures.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

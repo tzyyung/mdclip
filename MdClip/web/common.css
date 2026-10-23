@@ -6,6 +6,11 @@
   --danger: #d1453b;
 }
 
+/* Buttons drawn as plain icons or text: no border or background of their own. */
+.icon, .zoom .pct, .crumbs button, .kinds button, .menu button, .toast .x, .tab .x, .tab-new, .pic-head button {
+  border: 0; background: none; cursor: pointer;
+}
+
 ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
 
 ::-webkit-scrollbar { width: 12px; height: 12px; }

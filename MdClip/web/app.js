@@ -142,12 +142,13 @@ const toggleDark = () => applyTheme(resolveTheme(state.theme).dark ? state.lastL
 
 // ---------- layout: sidebar, outline, focus mode ----------
 
-// The panels' default widths are app.css's --side-w and --toc-w.
+// The panels' default widths are app.css's --side-w, --toc-w and --pic-w.
 const rootStyle = getComputedStyle(document.documentElement);
-const defaultWidths = { sideW: parseInt(rootStyle.getPropertyValue("--side-w")), tocW: parseInt(rootStyle.getPropertyValue("--toc-w")) };
+const cssWidth = (name) => parseInt(rootStyle.getPropertyValue(name));
+const defaultWidths = { sideW: cssWidth("--side-w"), tocW: cssWidth("--toc-w"), picW: cssWidth("--pic-w") };
 const layout = Object.assign(
   { side: true, toc: true, zen: false, ...defaultWidths, kind: "all", zoom: 1 },
-  store.get("layout", {}), { clip: cfg.clip }); // the host owns the clipboard mode (the tray menu sets it too)
+  store.get("layout", {}), { clip: cfg.clip, picDock: cfg.pictureDock }); // the host owns these (the tray menu, the picture window)
 // Also the host's: how many other characters may come with a path for it to open by itself, and what
 // to do when one copy names several files ("list" them, or open the "first").
 const clipOpts = { chars: cfg.clipChars, multi: cfg.clipMulti, max: cfg.clipMax };
@@ -158,6 +159,7 @@ function applyLayout() {
   body.classList.toggle("zen", layout.zen);
   body.style.setProperty("--side-w", layout.sideW + "px");
   body.style.setProperty("--toc-w", layout.tocW + "px");
+  body.style.setProperty("--pic-w", layout.picW + "px");
   $("toggle-side").classList.toggle("on", layout.side && !layout.zen);
   $("toggle-toc").classList.toggle("on", layout.toc && !layout.zen);
   $("toggle-zen").classList.toggle("on", layout.zen);
@@ -216,19 +218,22 @@ function setupPeek(hotId, panel, cls) {
   panel.addEventListener("focusout", () => { if (!panel.matches(":hover")) hide(); });
 }
 
-// The file tree's width is measured from the left edge, the outline's from the right; double-click resets.
+// The file tree's width is measured from the left edge, the outline's from the right, the picture pane's
+// from the outline (or the right edge); double-click resets.
 function setupResizer() {
+  const tocShown = () => ($("toc").offsetWidth > 0 ? layout.tocW : 0);
   const bars = [
-    { bar: $("resizer"), key: "sideW", prop: "--side-w", min: 200, width: (x) => x },
-    { bar: $("resizer-toc"), key: "tocW", prop: "--toc-w", min: 180, width: (x) => innerWidth - x },
+    { bar: $("resizer"), key: "sideW", prop: "--side-w", min: 200, max: 0.4, width: (x) => x },
+    { bar: $("resizer-toc"), key: "tocW", prop: "--toc-w", min: 180, max: 0.4, width: (x) => innerWidth - x },
+    { bar: $("resizer-pic"), key: "picW", prop: "--pic-w", min: 240, max: 0.65, width: (x) => innerWidth - tocShown() - x },
   ];
-  for (const { bar, key, prop, min, width } of bars) {
+  for (const { bar, key, prop, min, max, width } of bars) {
     bar.addEventListener("mousedown", (e) => {
       e.preventDefault();
       body.classList.add("dragging");
       bar.classList.add("active");
       const move = (ev) => {
-        layout[key] = Math.round(Math.min(Math.max(width(ev.clientX), min), Math.min(620, innerWidth * 0.4)));
+        layout[key] = Math.round(Math.min(Math.max(width(ev.clientX), min), innerWidth * max));
         body.style.setProperty(prop, layout[key] + "px");
       };
       const up = () => {
@@ -517,7 +522,7 @@ function hookDoc(doc) {
   doc.addEventListener("mousedown", closeMenus);
   doc.addEventListener("click", (e) => {
     const pic = e.target.closest("main img");
-    if (pic && !e.target.closest("a")) { e.preventDefault(); openLightbox(doc, pic); return; }
+    if (pic && !e.target.closest("a")) { e.preventDefault(); showDocPictures(doc, pic); return; }
     const a = e.target.closest("a[href]");
     if (!a || e.defaultPrevented) return;
     e.preventDefault();
@@ -978,14 +983,14 @@ const HELP = [
     [["拖曳邊線"], "調整側欄和大綱寬度，雙擊恢復"],
   ]],
   ["文件裡", [
-    [["點圖片"], "放大檢視：滾輪縮放、拖曳移動、← → 切換"],
+    [["點圖片"], "在圖片視窗看大圖：滾輪縮放、拖曳移動、← → 切換。把圖片視窗拖到主視窗上會停靠在右側，按「彈出」再變回視窗"],
     [["程式碼右上角"], "複製程式碼"],
     [["標題左邊的 🔗"], "複製「檔案路徑#標題」，貼回來會直接跳到那一節"],
     [["更多選單"], "匯出 PDF、複製檔案路徑、在檔案總管顯示"],
   ]],
   ["剪貼簿與背景", [
     [["複製路徑"], "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；路徑夾在一大段文字裡只提示，一次複製多個檔案會列出來讓你選。在「更多 → 剪貼簿設定」調整"],
-    [["複製圖片路徑"], "直接浮出預覽，不換頁：滾輪縮放、拖曳移動、← → 看同一資料夾的其他圖片（複製多張就看那幾張），Esc 關閉"],
+    [["複製圖片路徑"], "在圖片視窗預覽，文件不換頁：← → 看同一資料夾的其他圖片（複製多張就看那幾張），Esc 關閉"],
     [["✕ 關閉"], "縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」"],
     [["系統匣選單"], "最近讀過的檔案、開機時在背景啟動"],
   ]],
@@ -1495,13 +1500,27 @@ $("more-menu").addEventListener("click", (e) => {
 document.addEventListener("mousedown", (e) => { if (!e.target.closest(".menu, #theme, #more, #history")) closeMenus(); });
 addEventListener("blur", () => setTimeout(() => { if (document.activeElement === frame) closeMenus(); }));
 
-// ---------- lightbox for images inside a document ----------
+// ---------- pictures: the picture window, or the pane docked in the main window ----------
 
-// items: { src, name } — the pictures of a document, or pictures from the clipboard (with their folder).
-const lb = { items: [], i: 0, viewer: null };
+// The pane shows them when docked; otherwise the host's picture window does (PictureWindow.cs). Dragging the
+// window onto the main window docks it; the pane's "彈出" undocks it. The host remembers which was used last.
+const picPane = mdPictures($("pic-pane"), {
+  actions: [
+    { label: "彈出", title: "開成獨立視窗", run: () => post({ type: "undock", items: picPane.items, start: picPane.index }) },
+    { label: "✕", title: "關閉 (Esc)", run: () => closePicturePane() },
+  ],
+});
+
+// items: [{ src, name, path? }]
+function showPictures(items, start = 0) {
+  closeMenus();
+  if (!layout.picDock) { post({ type: "pictures", items, start }); return; }
+  picPane.show(items, start);
+  setPicturePane(true);
+}
 
 // The pictures of the open document, starting at the one clicked.
-function openLightbox(doc, pic) {
+function showDocPictures(doc, pic) {
   const imgs = [...doc.querySelectorAll("main img")];
   showPictures(imgs.map((img) => {
     const src = img.currentSrc || img.src;
@@ -1509,57 +1528,25 @@ function openLightbox(doc, pic) {
   }), Math.max(0, imgs.indexOf(pic)));
 }
 
-// Over the page, the document staying as it is: wheel zoom, drag, ← → through the set, Esc closes.
-function showPictures(items, start = 0) {
-  closeMenus();
-  lb.items = items;
-  lb.i = start;
-  $("lightbox").hidden = false;
-  showLightboxImage();
+function setPicturePane(open) {
+  $("pic-pane").hidden = !open;
+  body.classList.toggle("has-pic", open);
+  if (open) $("pic-pane").focus();
 }
 
-function showLightboxImage() {
-  const { src, name } = lb.items[lb.i];
-  const many = lb.items.length > 1;
-  lb.viewer?.destroy();
-  $("lightbox").innerHTML =
-    `<div class="zoom-stage" id="lb-stage"><img alt=""></div>` +
-    `<button class="icon lb-close" title="${esc(withKey("close"))}">${icon("close")}</button>` +
-    (many ? `<button class="icon lb-prev" title="上一張 (←)">${icon("back")}</button><button class="icon lb-next" title="下一張 (→)">${icon("forward")}</button>` : "");
-  const img = $("lightbox").querySelector("img");
-  img.src = src;
-  lb.viewer = mdZoom($("lb-stage"), img, { label: many ? `${name}　${lb.i + 1} / ${lb.items.length}` : name });
-}
-
-function stepLightbox(delta) {
-  if (lb.items.length < 2) return;
-  lb.i = (lb.i + delta + lb.items.length) % lb.items.length;
-  showLightboxImage();
-}
-
-function closeLightbox() {
-  lb.viewer?.destroy();
-  lb.viewer = null;
-  $("lightbox").hidden = true;
-  $("lightbox").innerHTML = "";
+function closePicturePane() {
+  setPicturePane(false);
   focusDoc();
 }
 
-$("lightbox").addEventListener("click", (e) => {
-  if (e.target.closest(".lb-close")) closeLightbox();
-  else if (e.target.closest(".lb-prev")) stepLightbox(-1);
-  else if (e.target.closest(".lb-next")) stepLightbox(1);
-});
-
-// Returns true when the lightbox is open and consumed the key.
-function lightboxKey(e) {
-  if ($("lightbox").hidden) return false;
-  if (e.key === "Escape") closeLightbox();
-  else if (e.key === "ArrowLeft" && !e.altKey) stepLightbox(-1);
-  else if (e.key === "ArrowRight" && !e.altKey) stepLightbox(1);
-  else if (!lb.viewer?.key(e)) return false;
+// ← → and zoom keys go to the pane while it has the focus (click it); Esc closes it.
+function pictureKey(e) {
+  if ($("pic-pane").hidden || !$("pic-pane").contains(document.activeElement)) return false;
+  if (e.key === "Escape") closePicturePane();
+  else if (!picPane.key(e)) return false;
   return true;
 }
+$("pic-pane").addEventListener("pointerdown", () => $("pic-pane").focus());
 
 // ---------- toast ----------
 
@@ -1735,7 +1722,7 @@ const kbds = (keys) => keys.map((k) => `<kbd>${esc(k)}</kbd>`).join(" ");
 const keysOf = (list) => list.map((k) => (KEYS[k] ? keyOf(k) : k));
 
 function onKey(e) {
-  if (!lightboxKey(e)) {
+  if (!pictureKey(e)) {
     const key = e.key.toLowerCase();
     const action = Object.values(KEYS).find((a) => a.run && a.combos.some((c) => pressed(c, e, key)) && (!a.when || a.when(e)));
     if (!action || action.run(e) === false) return;
@@ -1775,6 +1762,9 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
     case "clipPick": openPick(m.files, m.more); break;
+    case "docked": layout.picDock = true; showPictures(m.items, m.start); break;
+    case "undocked": layout.picDock = false; setPicturePane(false); break;
+    case "dockHint": $("dock-hint").hidden = !m.on; break;
     case "history": state.history = m.items; break;
     case "searchResults": onSearchResults(m); break;
     case "clipMode": layout.clip = m.mode; saveLayout(); break;

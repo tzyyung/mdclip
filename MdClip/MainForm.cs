@@ -250,6 +250,7 @@ sealed class MainForm : Form
 
     void HideToTray()
     {
+        pictureWindow?.Close();
         Hide();
         ReleaseWebView();
         var firstTime = !settings.TrayHintShown;
@@ -483,6 +484,18 @@ sealed class MainForm : Form
                 UseTheme(settings.Theme);
                 break;
             case "title": Text = Str("text") is { Length: > 0 } t ? $"{t} — {AppInfo.Name}" : AppInfo.Name; break;
+            case "pictures": // to the picture window (when docked, the page shows them itself)
+                pictures = msg.GetProperty("items").Clone();
+                pictureIndex = msg.TryGetProperty("start", out var start) && start.TryGetInt32(out var s0) ? s0 : 0;
+                ShowPictureWindow();
+                break;
+            case "undock": // the pane's "彈出": the pictures leave the main window for their own
+                pictures = msg.GetProperty("items").Clone();
+                pictureIndex = msg.TryGetProperty("start", out var from) && from.TryGetInt32(out var s1) ? s1 : 0;
+                settings.PictureDock = false;
+                Post(new { type = "undocked" });
+                ShowPictureWindow();
+                break;
             case "ready":
                 appReady = true;
                 foreach (var waiting in afterReady) Post(waiting);
@@ -860,6 +873,78 @@ sealed class MainForm : Form
         TopMost = false;
     }
 
+    // ---------- the picture window ----------
+
+    PictureWindow? pictureWindow;
+    JsonElement pictures; // what it shows, and which one (kept for docking)
+    int pictureIndex;
+    bool dockHint; // the main window is showing "let go to dock here"
+
+    void ShowPictureWindow()
+    {
+        if (web?.CoreWebView2 is not { } core) return;
+        if (pictureWindow is null)
+        {
+            var w = pictureWindow = new PictureWindow(this, core.Environment, Origin + "__app/pictures.html", OnResourceRequested, Origin);
+            w.Bounds = PictureWindowBounds();
+            w.Message += OnPictureMessage;
+            w.Dragging += OnPictureDragging;
+            w.Dropped += OnPictureDropped;
+            w.FormClosed += (_, _) => { settings.PictureWindow = w.Placement; pictureWindow = null; };
+            w.Show(this);
+        }
+        pictureWindow.Post(JsonSerializer.Serialize(new { type = "show", items = pictures, start = pictureIndex }, Json));
+        pictureWindow.Post(JsonSerializer.Serialize(new { type = "theme", id = theme.Id }, Json));
+        pictureWindow.Activate();
+    }
+
+    // Where it was last, if that is still on a screen; otherwise beside the main window, or over its right
+    // part when there is no room beside it.
+    Rectangle PictureWindowBounds()
+    {
+        if (settings.PictureWindow.Split(',') is [var x, var y, var w, var h]
+            && int.TryParse(x, out var left) && int.TryParse(y, out var top) && int.TryParse(w, out var width) && int.TryParse(h, out var height)
+            && width >= 200 && height >= 150 && Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(new Rectangle(left, top, width, height))))
+            return new Rectangle(left, top, width, height);
+        var area = Screen.FromControl(this).WorkingArea;
+        var size = new Size(Math.Max(480, Width * 45 / 100), Height);
+        var beside = Right + size.Width <= area.Right ? Right : area.Right - size.Width;
+        return new Rectangle(beside, Top, size.Width, size.Height);
+    }
+
+    void OnPictureMessage(string type, JsonElement msg)
+    {
+        if (type == "at" && msg.TryGetProperty("i", out var i) && i.TryGetInt32(out var at)) pictureIndex = at;
+        else if (type == "close") pictureWindow?.Close();
+        else if (type == "dock") DockPictures();
+    }
+
+    // While the picture window is dragged: over the main window, the page shows where it would dock.
+    void OnPictureDragging()
+    {
+        var over = Visible && WindowState != FormWindowState.Minimized && Bounds.Contains(Cursor.Position);
+        if (over == dockHint) return;
+        dockHint = over;
+        Post(new { type = "dockHint", on = over });
+    }
+
+    void OnPictureDropped()
+    {
+        if (!dockHint) return;
+        dockHint = false;
+        Post(new { type = "dockHint", on = false });
+        DockPictures();
+    }
+
+    // The pictures move into a pane of the main window, at the same picture; later ones go there too.
+    void DockPictures()
+    {
+        settings.PictureDock = true;
+        Post(new { type = "docked", items = pictures, start = pictureIndex });
+        pictureWindow?.Close();
+        Activate();
+    }
+
     // ---------- theme ----------
 
     // The window's own colours (background, title bar) for a theme id; "auto" follows Windows.
@@ -868,6 +953,7 @@ sealed class MainForm : Form
         theme = Themes.Resolve(id);
         BackColor = theme.Color("bg");
         if (web is not null) web.DefaultBackgroundColor = BackColor;
+        pictureWindow?.Post(JsonSerializer.Serialize(new { type = "theme", id = theme.Id }, Json));
         ApplyTitleBar();
     }
 
@@ -994,19 +1080,21 @@ sealed class MainForm : Form
                     maxHistory = Settings.MaxHistory,
                     autoLight = Themes.AutoLight,
                     autoDark = Themes.AutoDark,
+                    pictureDock = settings.PictureDock,
                     startScroll = TakeStartScroll(),
                     history = HistoryItems(recheck: true),
                     themes = Themes.All.Select(t => new { t.Id, t.Name, t.Dark, bg = t.Hex("bg"), accent = t.Hex("accent"), h3 = t.Hex("h3") }),
                 }, Json);
-                var html = Resource("app.html")
-                    .Replace("__THEME__", theme.Id)
-                    .Replace("/*THEMES*/", Themes.Css)
-                    .Replace("/*CONFIG*/", $"window.MD = {config};");
-                return (Encoding.UTF8.GetBytes(html), HtmlType);
+                return (Encoding.UTF8.GetBytes(Themed("app.html").Replace("/*CONFIG*/", $"window.MD = {config};")), HtmlType);
+            case "pictures.html":
+                return (Encoding.UTF8.GetBytes(Themed("pictures.html")), HtmlType);
             default: // app.css, app.js, the bundled libraries, katex/fonts/*.woff2, ...
                 return ResourceBytes(name) is { } bytes ? (bytes, ContentType(name) ?? "application/octet-stream") : null;
         }
     }
+
+    // An app page with the current theme and every theme's colours filled in.
+    string Themed(string page) => Resource(page).Replace("__THEME__", theme.Id).Replace("/*THEMES*/", Themes.Css);
 
     static byte[]? ResourceBytes(string name) => resources.GetOrAdd(name, static n =>
     {

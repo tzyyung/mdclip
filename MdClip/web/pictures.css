@@ -1,0 +1,16 @@
+/* The picture viewer (pictures.js), in the picture window and in the pane docked in the app. */
+.pictures { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 var(--ui); }
+.pic-head {
+  flex: none; display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 8px;
+  border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--fg) 3.5%, var(--bg));
+}
+.pic-head button { flex: none; min-width: 30px; height: 28px; padding: 0 8px; border-radius: 6px; color: var(--muted); font: inherit; }
+.pic-head button:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+.pic-head .pic-step { font-size: 20px; line-height: 1; }
+.pic-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.pic-count { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pic-gap { flex: 1; }
+.pic-stage { flex: 1; min-height: 0; }
+
+body.picture-window { margin: 0; height: 100vh; overflow: hidden; background: var(--bg); }
+body.picture-window .pictures { height: 100vh; }

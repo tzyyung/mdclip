@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hant" data-theme="__THEME__">
+<head>
+<meta charset="utf-8">
+<title>圖片</title>
+<style>/*THEMES*/</style>
+<link rel="stylesheet" href="common.css">
+<link rel="stylesheet" href="zoom.css">
+<link rel="stylesheet" href="pictures.css">
+</head>
+<body class="picture-window">
+<div id="pictures"></div>
+<script src="zoom.js"></script>
+<script src="pictures.js"></script>
+<script>
+  // The picture window (PictureWindow.cs): the host sends the pictures and the theme; this tells it where
+  // the reader is, and asks to dock into the main window or to close.
+  const post = (m) => window.chrome.webview.postMessage(m);
+  const view = mdPictures(document.getElementById("pictures"), {
+    onIndex: (i) => post({ type: "at", i }),
+    actions: [
+      { label: "停靠到主視窗", title: "停靠在主視窗右側（把這個視窗拖到主視窗上也可以）", run: () => post({ type: "dock" }) },
+      { label: "✕", title: "關閉 (Esc)", run: () => post({ type: "close" }) },
+    ],
+  });
+  window.chrome.webview.addEventListener("message", (e) => {
+    const m = e.data;
+    if (m.type === "show") view.show(m.items, m.start);
+    else if (m.type === "theme") document.documentElement.dataset.theme = m.id;
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") post({ type: "close" });
+    else if (view.key(e)) e.preventDefault();
+  });
+  post({ type: "ready" });
+</script>
+</body>
+</html>
