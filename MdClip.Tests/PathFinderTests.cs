@@ -1,6 +1,6 @@
-using MdViewer;
+using MdClip;
 
-namespace MdViewer.Tests;
+namespace MdClip.Tests;
 
 public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
 {

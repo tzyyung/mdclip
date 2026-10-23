@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MdViewer;
+namespace MdClip;
 
 // The Windows calls the app makes that .NET does not wrap, in one place.
 static class Native

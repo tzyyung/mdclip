@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace MdViewer;
+namespace MdClip;
 
 // Existence checks for paths the user gave us (clipboard, history, remembered folders). A path on a
 // network share whose server is off makes a plain File.Exists wait about 25 s, which on the window's

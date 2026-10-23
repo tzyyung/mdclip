@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Unit tests for MdViewer.Core, the part that needs no window. -->
+  <!-- Unit tests for MdClip.Core, the part that needs no window. -->
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\MdViewer.Core\MdViewer.Core.csproj" />
+    <ProjectReference Include="..\MdClip.Core\MdClip.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

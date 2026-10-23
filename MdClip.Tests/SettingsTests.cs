@@ -1,4 +1,4 @@
-namespace MdViewer.Tests;
+namespace MdClip.Tests;
 
 // Only the in-memory rules: Load and Save use the user's real settings file.
 public sealed class SettingsTests
@@ -109,4 +109,38 @@ public sealed class PathsTests
 
     [Fact]
     public void Extension_alternation_for_patterns() => Assert.Equal("md|markdown", Paths.Alternation(Paths.MarkdownExtensions));
+}
+
+public sealed class FormerNameTests : IDisposable
+{
+    readonly string top = Path.Combine(Path.GetTempPath(), "mdclip-rename-" + Guid.NewGuid().ToString("N")[..8]);
+
+    [Fact]
+    public void The_former_data_folder_becomes_the_new_one()
+    {
+        var former = Path.Combine(top, "MdViewer");
+        var current = Path.Combine(top, "MdClip");
+        Directory.CreateDirectory(Path.Combine(former, "WebView2"));
+        File.WriteAllText(Path.Combine(former, "theme.txt"), "theme=nord");
+        AppInfo.TakeOverFormerData(former, current);
+        Assert.False(Directory.Exists(former));
+        Assert.Equal("theme=nord", File.ReadAllText(Path.Combine(current, "theme.txt")));
+        Assert.True(Directory.Exists(Path.Combine(current, "WebView2")));
+    }
+
+    [Fact]
+    public void An_existing_data_folder_is_left_alone()
+    {
+        var former = Path.Combine(top, "MdViewer");
+        var current = Path.Combine(top, "MdClip");
+        Directory.CreateDirectory(former);
+        File.WriteAllText(Path.Combine(former, "theme.txt"), "theme=old");
+        Directory.CreateDirectory(current);
+        File.WriteAllText(Path.Combine(current, "theme.txt"), "theme=new");
+        AppInfo.TakeOverFormerData(former, current);
+        Assert.Equal("theme=new", File.ReadAllText(Path.Combine(current, "theme.txt")));
+        Assert.True(Directory.Exists(former));
+    }
+
+    public void Dispose() { if (Directory.Exists(top)) Directory.Delete(top, recursive: true); }
 }

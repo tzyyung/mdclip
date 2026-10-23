@@ -1,5 +1,5 @@
-# Unit tests for the path rules (MdViewer.Tests), then an end-to-end check of the built viewer
-# (app\MdViewer.exe): page features through the debug port (tools\smoke.mjs), then the tray: close
+# Unit tests for the path rules (MdClip.Tests), then an end-to-end check of the built viewer
+# (app\MdClip.exe): page features through the debug port (tools\smoke.mjs), then the tray: close
 # button hides, a clipboard path brings it back, --exit quits.
 #   .\tools\smoke-test.ps1
 #   .\tools\smoke-test.ps1 -Only "heading link" -Repeat 20   # one page check, many times (intermittent failures)
@@ -21,11 +21,11 @@ public delegate bool EnumProc(System.IntPtr h, System.IntPtr l);
 '@
 
 $repo = Split-Path $PSScriptRoot
-$exe = Join-Path $repo 'app\MdViewer.exe'
+$exe = Join-Path $repo 'app\MdClip.exe'
 $fixtures = Join-Path $PSScriptRoot 'fixtures'
-$settings = Join-Path $env:LOCALAPPDATA 'MdViewer\theme.txt'
+$settings = Join-Path $env:LOCALAPPDATA 'MdClip\theme.txt'
 
-dotnet test (Join-Path $repo 'MdViewer.Tests') --nologo -v q
+dotnet test (Join-Path $repo 'MdClip.Tests') --nologo -v q
 if ($LASTEXITCODE -ne 0) { throw 'unit tests failed' }
 
 . (Join-Path $PSScriptRoot 'viewer.ps1') # Get-Viewer, Stop-Viewer
@@ -37,13 +37,13 @@ function Get-MainWindow {
     [Smoke.Win]::EnumWindows({ param($h, $l)
         $id = 0; [void][Smoke.Win]::GetWindowThreadProcessId($h, [ref]$id)
         $sb = New-Object System.Text.StringBuilder 256; [void][Smoke.Win]::GetWindowText($h, $sb, 256)
-        if ($id -eq $p.Id -and $sb.ToString() -like '*MdViewer') { $script:found = $h }
+        if ($id -eq $p.Id -and $sb.ToString() -like '*MdClip') { $script:found = $h }
         $true }, [IntPtr]::Zero) | Out-Null
     $script:found
 }
 
 function Get-WebViewProcessCount {
-    @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -match 'webview-exe-name=MdViewer.exe' }).Count
+    @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -match 'webview-exe-name=MdClip.exe' }).Count
 }
 
 $failed = 0

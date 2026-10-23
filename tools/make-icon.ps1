@@ -1,8 +1,8 @@
-﻿# Draws the MdViewer icon (a rounded tile with the Markdown "M↓" mark) and writes MdViewer\app.ico.
+﻿# Draws the MdClip icon (a rounded tile with the Markdown "M↓" mark) and writes MdClip\app.ico.
 # Sizes up to 64 px are stored as 32-bit bitmaps, 256 px as PNG, which is what Windows expects.
 Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference = 'Stop'
-$out = Join-Path $PSScriptRoot '..\MdViewer\app.ico'
+$out = Join-Path $PSScriptRoot '..\MdClip\app.ico'
 
 function New-IconBitmap([int]$size) {
     $bmp = New-Object System.Drawing.Bitmap $size, $size, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)

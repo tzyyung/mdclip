@@ -1,6 +1,6 @@
-namespace MdViewer;
+namespace MdClip;
 
-// Everything MdViewer remembers, in %LOCALAPPDATA%\MdViewer\theme.txt: the theme and the last light and dark
+// Everything MdClip remembers, in %LOCALAPPDATA%\MdClip\theme.txt: the theme and the last light and dark
 // picks, the last root folder, the clipboard options, the folders of files opened or copied (most recent
 // first; used to find copied bare file names) and the reading history.
 // Every change raises Changed; the app saves once the changes pause (see MainForm), so a burst of changes

@@ -1,4 +1,4 @@
-namespace MdViewer;
+namespace MdClip;
 
 // One entry of the side panel's tree: a folder (Children) or a file (Path, relative to the root).
 public sealed record TreeItem(string Name, string? Path, List<TreeItem>? Children);

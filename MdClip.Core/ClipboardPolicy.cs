@@ -1,4 +1,4 @@
-namespace MdViewer;
+namespace MdClip;
 
 // What to do with files found on the clipboard: the one place for the clipboard modes' rules, used for the
 // page while the window is open and for the tray notification while it is hidden.

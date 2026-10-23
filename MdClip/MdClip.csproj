@@ -6,8 +6,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>MdViewer</AssemblyName>
-    <RootNamespace>MdViewer</RootNamespace>
+    <AssemblyName>MdClip</AssemblyName>
+    <RootNamespace>MdClip</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\MdViewer.Core\MdViewer.Core.csproj" />
+    <ProjectReference Include="..\MdClip.Core\MdClip.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

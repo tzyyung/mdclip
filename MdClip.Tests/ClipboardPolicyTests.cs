@@ -1,4 +1,4 @@
-namespace MdViewer.Tests;
+namespace MdClip.Tests;
 
 // The clipboard modes' rules, as one table: mode, several-files choice, copied on purpose, several files,
 // clicked in the tray -> what happens.

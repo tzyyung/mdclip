@@ -1,6 +1,6 @@
 using System.IO.Pipes;
 
-namespace MdViewer;
+namespace MdClip;
 
 static class Program
 {
@@ -20,6 +20,7 @@ static class Program
         }
         if (!first && (startHidden || SendToRunningInstance(path))) return;
 
+        AppInfo.TakeOverFormerData(); // before anything reads the settings or writes the log
         ApplicationConfiguration.Initialize();
         Application.ThreadException += (_, e) => LogError(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => LogError(e.ExceptionObject as Exception);

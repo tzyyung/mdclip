@@ -1,4 +1,4 @@
-namespace MdViewer.Tests;
+namespace MdClip.Tests;
 
 public sealed class FrontMatterTests
 {

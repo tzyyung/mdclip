@@ -1,23 +1,25 @@
-# MdViewer
+# MdClip
+
+A Markdown viewer for Windows that opens the file whose path you just copied.
 
 Windows 上的 Markdown 閱讀器：雙擊 `.md` 就打開，左邊檔案樹、右邊大綱，彩色排版，
 複製一個路徑它就自動跳出那份文件。
 
-![icon](MdViewer/app.ico)
+![icon](MdClip/app.ico)
 
 ## 安裝
 
 需要 64 位元 Windows 10 / 11。
 
-1. 編譯（見下一節），或直接用已經編好的 `app\MdViewer.exe`。
-2. 執行一次 `.\install.ps1`：之後雙擊 `.md`、`.markdown` 都會用 MdViewer 打開，開始功能表也會有捷徑。
+1. 編譯（見下一節），得到 `app\MdClip.exe`。
+2. 執行一次 `.\install.ps1`：之後雙擊 `.md`、`.markdown` 都會用 MdClip 打開，開始功能表也會有捷徑。
    不需要系統管理員權限，只影響目前的使用者。
    - 如果 Windows 還是用別的程式開，表示之前選過「一律使用這個應用程式」：
-     在 `.md` 上按右鍵 → 開啟檔案 → 選擇其他應用程式 → MdViewer → 一律使用。
+     在 `.md` 上按右鍵 → 開啟檔案 → 選擇其他應用程式 → MdClip → 一律使用。
    - 移除：`.\install.ps1 -Uninstall`
 
-`app\MdViewer.exe` 需要 [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)。
-要拿到沒有裝 .NET 的電腦上用，請編譯成自帶執行環境的版本（`dist\MdViewer.exe`，約 50 MB）。
+`app\MdClip.exe` 需要 [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)。
+要拿到沒有裝 .NET 的電腦上用，請編譯成自帶執行環境的版本（`dist\MdClip.exe`，約 50 MB）。
 兩者都需要 WebView2 Runtime（Windows 10 / 11 通常已內建）。
 
 ## 編譯
@@ -25,16 +27,16 @@ Windows 上的 Markdown 閱讀器：雙擊 `.md` 就打開，左邊檔案樹、�
 需要 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。
 
 ```powershell
-.\publish.ps1                 # -> app\MdViewer.exe
-.\publish.ps1 -SelfContained  # -> dist\MdViewer.exe，換電腦用
+.\publish.ps1                 # -> app\MdClip.exe
+.\publish.ps1 -SelfContained  # -> dist\MdClip.exe，換電腦用
 ```
 
-MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.exe --exit`），編譯完再開回來。
+MdClip 正在執行時，`publish.ps1` 會先請它正常結束（`MdClip.exe --exit`），編譯完再開回來。
 不要用工作管理員強制結束：系統匣會留下沒有程式的圖示（滑鼠移過去才會消失）。
 
 ## 功能
 
-在 MdViewer 裡按 `?` 可以看到完整的快捷鍵與功能表。
+在 MdClip 裡按 `?` 可以看到完整的快捷鍵與功能表。
 
 **閱讀**
 - 標題、粗體、表格、引用、清單都有顏色層次；12 種主題（GitHub、Dracula、Nord、Solarized……），`Ctrl+D` 亮暗切換。
@@ -76,7 +78,7 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 
 ## 設定與記錄檔
 
-都在 `%LOCALAPPDATA%\MdViewer\`：
+都在 `%LOCALAPPDATA%\MdClip\`：
 
 | 檔案 | 內容 |
 |---|---|
@@ -92,22 +94,22 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 .\tools\smoke-test.ps1
 ```
 
-先跑單元測試（`MdViewer.Tests`，約 140 個，大多是「複製這段文字應該打開哪個檔」的例子：絕對 / 相對路徑、只有檔名、
+先跑單元測試（`MdClip.Tests`，約 140 個，大多是「複製這段文字應該打開哪個檔」的例子：絕對 / 相對路徑、只有檔名、
 含空白的路徑、黏在中文句子裡的路徑、`#標題`），再用 `tools\fixtures\` 的測試文件把主要功能跑一遍，
 最後檢查系統匣：✕ 會縮到系統匣、複製路徑會叫回視窗、`--exit` 能結束。需要 Node.js 22 以上。
-只想跑單元測試（幾秒鐘，不會動到正在執行的 MdViewer）：`dotnet test MdViewer.Tests`。
-執行前會先關掉 MdViewer，結束後開回原本那份文件；剪貼簿會先備份、測完還原，測試檔不會留在閱讀紀錄裡。
+只想跑單元測試（幾秒鐘，不會動到正在執行的 MdClip）：`dotnet test MdClip.Tests`。
+執行前會先關掉 MdClip，結束後開回原本那份文件；剪貼簿會先備份、測完還原，測試檔不會留在閱讀紀錄裡。
 
 ## 程式結構
 
 | 路徑 | 內容 |
 |---|---|
-| `MdViewer/Program.cs` | 進入點、只允許一個程式（第二次開啟會把路徑交給已開的視窗）、`--tray` / `--exit` |
-| `MdViewer/MainForm.cs` | 視窗、系統匣、剪貼簿監控、提供網頁內容給 WebView2 |
-| `MdViewer/Native.cs` | 程式用到的 Windows API，集中一處 |
-| `MdViewer/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX；`common.css` 是介面和文件頁共用的字型、顏色、捲軸。快捷鍵都定義在 `app.js` 的 `KEYS` 表，說明面板、選單和按鈕提示都從這裡產生 |
-| `MdViewer.Core/` | 不需要視窗的部分，程式和測試共用的函式庫： |
-| `　AppInfo.cs` | 程式名稱、資料夾（`%LOCALAPPDATA%\MdViewer`）、命令列參數 |
+| `MdClip/Program.cs` | 進入點、只允許一個程式（第二次開啟會把路徑交給已開的視窗）、`--tray` / `--exit` |
+| `MdClip/MainForm.cs` | 視窗、系統匣、剪貼簿監控、提供網頁內容給 WebView2 |
+| `MdClip/Native.cs` | 程式用到的 Windows API，集中一處 |
+| `MdClip/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX；`common.css` 是介面和文件頁共用的字型、顏色、捲軸。快捷鍵都定義在 `app.js` 的 `KEYS` 表，說明面板、選單和按鈕提示都從這裡產生 |
+| `MdClip.Core/` | 不需要視窗的部分，程式和測試共用的函式庫： |
+| `　AppInfo.cs` | 程式名稱、資料夾（`%LOCALAPPDATA%\MdClip`）、命令列參數 |
 | `　Paths.cs` | 哪些副檔名算文件、圖片，各自的檔案類型，完整路徑和相對路徑互換（唯一的清單，網頁也從這裡拿） |
 | `　PathFinder.cs` | 從複製或貼上的文字找出要打開的檔案（剪貼簿、快速開啟共用） |
 | `　ClipboardPolicy.cs` | 剪貼簿找到檔案時要自動開、只提示還是列清單（視窗和系統匣共用同一套規則） |
@@ -118,7 +120,18 @@ MdViewer 正在執行時，`publish.ps1` 會先請它正常結束（`MdViewer.ex
 | `　TextFiles.cs` | 讀檔與辨識編碼（顯示和全文搜尋共用） |
 | `　Settings.cs` | 設定檔的讀寫，以及每個選項的合法值（讀檔、網頁、系統匣選單都照這裡） |
 | `　Themes.cs` | 12 種主題的顏色，以及「跟隨系統」用的兩個主題 |
-| `MdViewer.Tests/` | `MdViewer.Core` 的單元測試，以及速度測試 |
+| `MdClip.Tests/` | `MdClip.Core` 的單元測試，以及速度測試 |
 | `tools/make-icon.ps1` | 產生 `app.ico` |
 | `tools/viewer.ps1` | 讓 viewer 正常結束並等它關掉（`publish.ps1` 和測試共用） |
 | `tools/smoke-test.ps1`、`tools/smoke.mjs` | 自動化測試（含單元測試） |
+
+## 從 MdViewer 改名
+
+MdClip 以前叫 MdViewer。第一次啟動 MdClip 時，會自動把 `%LOCALAPPDATA%\MdViewer` 搬成 `%LOCALAPPDATA%\MdClip`
+（設定、閱讀紀錄、記住的資料夾、版面與分頁都保留），開機啟動也會改成 MdClip。
+重新執行一次 `.\install.ps1`，雙擊 `.md` 就會改用 MdClip，舊的關聯和開始功能表捷徑會一併移除。
+
+## 授權
+
+MIT，見 [LICENSE](LICENSE)。打包進來的第三方套件（highlight.js、Mermaid、KaTeX 等）各自的授權見
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

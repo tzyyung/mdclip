@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace MdViewer.Tests;
+namespace MdClip.Tests;
 
 // Clipboard text is looked at on the window's thread, so even the worst text must not hold it up:
 // 20,000 characters full of file names that exist nowhere, against 200 remembered folders.

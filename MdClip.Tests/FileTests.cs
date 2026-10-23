@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace MdViewer.Tests;
+namespace MdClip.Tests;
 
 public sealed class TextFilesTests
 {

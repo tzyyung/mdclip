@@ -9,10 +9,10 @@ using System.Text.Json.Serialization;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
-using static MdViewer.Paths;
-using static MdViewer.PathFinder;
+using static MdClip.Paths;
+using static MdClip.PathFinder;
 
-namespace MdViewer;
+namespace MdClip;
 
 // Native host: one WebView2 filling the window. The UI (sidebar, toolbar, outline, palette) is the
 // web app in web/, served at https://md.view/__app/. Files under the root folder are served at
@@ -100,6 +100,7 @@ sealed class MainForm : Form
         };
 
         SetupTray();
+        TakeOverFormerAutostart();
         OpenStart(startPath);
     }
 
@@ -343,6 +344,15 @@ sealed class MainForm : Form
         using var key = Registry.CurrentUser.CreateSubKey(RunKey);
         if (on) key.SetValue(AppInfo.Name, AutostartCommand);
         else key.DeleteValue(AppInfo.Name, throwOnMissingValue: false);
+    }
+
+    // If the user had the former name start at sign-in, MdClip now does instead.
+    static void TakeOverFormerAutostart()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
+        if (key?.GetValue(AppInfo.FormerName) is null) return;
+        key.DeleteValue(AppInfo.FormerName);
+        SetAutostart(true);
     }
 
     // ---------- single instance ----------

@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace MdViewer;
+namespace MdClip;
 
 // Reading the files we show and search, in one place.
 public static class TextFiles

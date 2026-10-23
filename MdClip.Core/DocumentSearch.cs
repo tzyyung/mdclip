@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace MdViewer;
+namespace MdClip;
 
 // Case-insensitive search through the Markdown files of a folder. Each file's text is kept while its
 // modification time is unchanged, up to about 64 MB of text, past which the cache starts over.

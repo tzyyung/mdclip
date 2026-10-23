@@ -1,11 +1,11 @@
 using System.Text.RegularExpressions;
 
-namespace MdViewer;
+namespace MdClip;
 
 // Works out which markdown or image file a pasted or copied piece of text refers to: an absolute path,
 // a path relative to the root, a file:// URL, a path with spaces inside a sentence, or just a file name /
 // path tail matched against the files under the root and the folders opened before. Free of UI and
-// settings so the rules can be tested on their own (MdViewer.Tests).
+// settings so the rules can be tested on their own (MdClip.Tests).
 public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnlyList<string> recentDirs)
 {
     // Path-looking tokens ending in a listed extension, e.g. E:\docs\b.md, docs/x.png, ./y.md:12.

@@ -7,9 +7,9 @@ using Markdig.Extensions.Yaml;
 using Markdig.Renderers;
 using Markdig.Syntax;
 
-namespace MdViewer;
+namespace MdClip;
 
-// The HTML pages MdViewer shows: rendered Markdown, plain text, the image viewer and error pages. Every page
+// The HTML pages MdClip shows: rendered Markdown, plain text, the image viewer and error pages. Every page
 // starts the same way (the current theme, the no-scripts policy, the styles), from one place.
 // style: every theme's variables plus the stylesheets (the app holds them); themeId: the theme right now.
 public sealed class DocumentPages(string style, Func<string> themeId)

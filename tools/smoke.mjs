@@ -1,4 +1,4 @@
-// Drives a running MdViewer (started with --remote-debugging-port) through its features and reports
+// Drives a running MdClip (started with --remote-debugging-port) through its features and reports
 // PASS/FAIL per check. Run by smoke-test.ps1, which starts the viewer, guards the clipboard and
 // checks the tray behaviour afterwards.
 //   node smoke.mjs <port> <fixtures folder>

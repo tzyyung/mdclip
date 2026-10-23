@@ -1,13 +1,13 @@
 using System.Text.RegularExpressions;
 
-namespace MdViewer;
+namespace MdClip;
 
-// Which files MdViewer shows, what type each file is served as, and how a file's path relates to the open
+// Which files MdClip shows, what type each file is served as, and how a file's path relates to the open
 // folder (the root). The one place for all three: the tree, the watcher, the clipboard rules, the server and
 // the web page (sent to it) use these.
 public static class Paths
 {
-    // The pictures MdViewer shows, with the type each is served as (declared first: the lists below use it).
+    // The pictures MdClip shows, with the type each is served as (declared first: the lists below use it).
     static readonly (string Extension, string Type)[] ImageTypes =
     [
         (".png", "image/png"), (".jpg", "image/jpeg"), (".jpeg", "image/jpeg"), (".gif", "image/gif"),

@@ -1,5 +1,5 @@
 "use strict";
-// MdViewer web UI. The native host (MainForm.cs) serves this page, the file tree (/__api/tree)
+// MdClip web UI. The native host (MainForm.cs) serves this page, the file tree (/__api/tree)
 // and rendered documents (/<relative path>), and talks to us over chrome.webview messages.
 
 const cfg = window.MD;

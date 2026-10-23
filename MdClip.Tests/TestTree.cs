@@ -1,4 +1,4 @@
-namespace MdViewer.Tests;
+namespace MdClip.Tests;
 
 // A throwaway folder tree standing in for a docs repo plus one folder outside it:
 //   root\docs\setup.md            root\guide.md          root\a\notes.md, root\b\notes.md (same name twice)
@@ -11,7 +11,7 @@ public sealed class Tree : IDisposable
 
     public Tree()
     {
-        var top = Path.Combine(Path.GetTempPath(), "mdviewer-tests-" + Guid.NewGuid().ToString("N")[..8]);
+        var top = Path.Combine(Path.GetTempPath(), "mdclip-tests-" + Guid.NewGuid().ToString("N")[..8]);
         Root = Path.Combine(top, "root");
         Outside = Path.Combine(top, "outside");
         foreach (var file in new[] { @"docs\setup.md", "guide.md", @"a\notes.md", @"b\notes.md", @"project\docs\readme.md", @"pics\dot.png", @"My Docs\a b.md" })

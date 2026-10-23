@@ -1,7 +1,7 @@
 using System.Drawing;
 using System.Text.RegularExpressions;
 
-namespace MdViewer;
+namespace MdClip;
 
 // Page palettes. Each theme only sets CSS variables; the app's stylesheets consume them.
 // Colors follow each project's published palette (GitHub Primer, draculatheme.com, nordtheme.com, ...).
