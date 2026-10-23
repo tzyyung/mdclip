@@ -139,7 +139,7 @@ sealed class MainForm : Form
         appReady = false;
         WebView2 view;
         try { view = await CreateWebViewAsync(); }
-        catch (Exception) when (web is null) { return; } // hidden again while starting
+        catch (Exception) when (web is null || exiting) { return; } // hidden again or quitting while starting
         if (web != view) return;
 
         var core = view.CoreWebView2;
@@ -170,7 +170,8 @@ sealed class MainForm : Form
             await view.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, dataDir));
             return view;
         }
-        catch (COMException ex) when (web == view)
+        // Not when the start was cancelled by hiding or quitting (E_ABORT): nothing is wrong then.
+        catch (COMException ex) when (web == view && !exiting)
         {
             Program.LogError(ex);
             // The shared profile is held by a browser process started with other options
@@ -478,8 +479,13 @@ sealed class MainForm : Form
             case "clipMode":
                 if (Str("mode") is "auto" or "hint" or "off") { settings.Clip = Str("mode"); settings.Save(); }
                 break;
+            case "clipList": // "open the first" opened one; now list them all
+                if (clipText is { } listed && Finder().Analyze(listed, int.MaxValue, settings.ClipMax) is { Files.Count: > 0 } offer)
+                    Post(new { type = "clipPick", files = FileItems(offer.Files), more = offer.More });
+                break;
             case "clipOptions":
                 if (msg.TryGetProperty("chars", out var c) && c.TryGetInt32(out var chars) && chars >= 0) settings.ClipChars = chars;
+                if (msg.TryGetProperty("max", out var m) && m.TryGetInt32(out var max) && max is >= 2 and <= 50) settings.ClipMax = max;
                 if (Str("multi") is "list" or "first") settings.ClipMulti = Str("multi");
                 settings.Save();
                 break;
@@ -772,6 +778,11 @@ sealed class MainForm : Form
     // Longer text (a whole log or document) is not looked at.
     const int MaxClipboardText = 20_000;
 
+    string? clipText; // the last clipboard text that named files, for listing them all on request
+
+    object FileItems(IEnumerable<string> files) =>
+        files.Select(f => new { path = f, rel = IsUnder(f, root) ? ToRel(f) : null }).ToList();
+
     void ReadClipboard()
     {
         clipboardDelay.Stop();
@@ -780,22 +791,25 @@ sealed class MainForm : Form
 
         string? found = null, hash = null;
         List<string> matches = [], files = [];
-        bool deliberate = true;
+        bool more = false, deliberate = true;
+        clipText = null;
         try
         {
             if (Clipboard.ContainsFileDropList())
             {
-                var copied = Clipboard.GetFileDropList().Cast<string>().Where(f => IsListed(f) && File.Exists(f)).Take(20).ToList();
+                var copied = Clipboard.GetFileDropList().Cast<string>().Where(f => IsListed(f) && File.Exists(f)).Take(settings.ClipMax + 1).ToList();
                 if (copied.Count == 1) found = copied[0];
-                else files = copied;
+                else (files, more) = (copied.Take(settings.ClipMax).ToList(), copied.Count > settings.ClipMax);
             }
             else if (Clipboard.ContainsText() && Clipboard.GetText() is { Length: <= MaxClipboardText } text)
             {
                 (var pathText, hash) = SplitFragment(text);
                 var finder = Finder();
-                (found, matches, files, deliberate) = finder.Analyze(pathText, settings.ClipChars);
+                // "Open the first" needs only the first file and whether there are others.
+                (found, matches, files, more, deliberate) = finder.Analyze(pathText, settings.ClipChars, settings.ClipMulti == "first" ? 1 : settings.ClipMax);
                 foreach (var dir in finder.SeenDirs) settings.RememberDir(dir);
                 if (files.Count > 0) hash = null; // a heading belongs to one file
+                clipText = pathText;
             }
         }
         catch (ExternalException ex)
@@ -816,7 +830,8 @@ sealed class MainForm : Form
             path = found,
             rel = found is not null && IsUnder(found, root) ? ToRel(found) : null,
             matches = found is null && matches.Count > 0 ? matches : null,
-            files = files.Count > 0 ? files.Select(f => new { path = f, rel = IsUnder(f, root) ? ToRel(f) : null }).ToList() : null,
+            files = files.Count > 0 ? FileItems(files) : null,
+            more,
             hash,
             deliberate,
             fromSelf = ActiveForm == this,
@@ -831,7 +846,7 @@ sealed class MainForm : Form
         {
             hintedClipboard = Message(true);
             var (title, body) = files.Count > 0
-                ? ($"剪貼簿裡有 {files.Count} 個可以開啟的檔案", "點這裡選擇")
+                ? ($"剪貼簿裡有{(more ? "超過 " : " ")}{files.Count} 個可以開啟的檔案", "點這裡選擇")
                 : ("剪貼簿裡有可以開啟的檔案", $"{Path.GetFileName(found ?? matches[0])}（點這裡開啟）");
             tray.ShowBalloonTip(6000, title, body, ToolTipIcon.None);
             return;
@@ -981,6 +996,7 @@ sealed class MainForm : Form
                     clip = settings.Clip,
                     clipChars = settings.ClipChars,
                     clipMulti = settings.ClipMulti,
+                    clipMax = settings.ClipMax,
                     startScroll = TakeStartScroll(),
                     history = HistoryItems(),
                     themes = Themes.All.Select(t => new { t.Id, t.Name, t.Dark, bg = t.Hex("bg"), accent = t.Hex("accent"), h3 = t.Hex("h3") }),

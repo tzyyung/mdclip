@@ -300,6 +300,46 @@ public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
     }
 
     [Fact]
+    public void List_stops_at_the_limit_and_says_there_are_more()
+    {
+        var offer = Finder(tree.Outside).Analyze("docs/setup.md pics/dot.png guide.md archive.md", 30, listLimit: 2);
+        Assert.Equal([tree.In(@"docs\setup.md"), tree.In(@"pics\dot.png")], offer.Files);
+        Assert.True(offer.More);
+    }
+
+    [Fact]
+    public void List_within_the_limit_has_no_more()
+    {
+        var offer = Finder(tree.Outside).Analyze("docs/setup.md pics/dot.png", 30, listLimit: 2);
+        Assert.Equal(2, offer.Files.Count);
+        Assert.False(offer.More);
+    }
+
+    [Fact]
+    public void Open_first_mode_only_finds_the_first_and_whether_there_are_others()
+    {
+        var offer = Finder(tree.Outside).Analyze("docs/setup.md pics/dot.png guide.md", 30, listLimit: 1);
+        Assert.Equal([tree.In(@"docs\setup.md")], offer.Files);
+        Assert.True(offer.More);
+        Assert.Equal(tree.In(@"docs\setup.md"), Finder().Analyze("docs/setup.md", 30, listLimit: 1).Path);
+    }
+
+    [Fact]
+    public void Paths_not_looked_up_do_not_count_as_extra_words()
+    {
+        var three = string.Join("\n", tree.In(@"docs\setup.md"), tree.In(@"pics\dot.png"), tree.In("guide.md"));
+        Assert.True(Finder().Analyze(three, 0, listLimit: 1).Deliberate);
+        Assert.True(Finder().Analyze("docs/nope.md docs/setup.md", 0).Deliberate);
+    }
+
+    [Fact]
+    public void Only_the_first_hundred_names_are_looked_at()
+    {
+        var text = string.Concat(Enumerable.Range(0, 100).Select(i => $"x{i}.md ")) + "docs/setup.md";
+        Assert.Null(Finder().Analyze(text, 30).Path);
+    }
+
+    [Fact]
     public void Same_file_named_twice_is_one_file()
     {
         var offer = Offer($"{tree.In(@"docs\setup.md")} 也就是 docs/setup.md");

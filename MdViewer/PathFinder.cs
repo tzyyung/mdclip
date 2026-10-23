@@ -10,9 +10,10 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
 {
     // Path-looking tokens ending in a listed extension, e.g. E:\docs\b.md, docs/x.png, ./y.md:12.
     // The extension ends at anything but an ASCII word character, not at \b: CJK counts as a word
-    // character, so "setup.md這份" would not end there.
+    // character, so "setup.md這份" would not end there. At most 260 characters (the usual Windows path
+    // limit): unbounded, a long run of text without spaces would be scanned again from every position.
     static readonly Regex PathToken = new(
-        @"(?:[A-Za-z]:[\\/]|\\\\)?[^\s""'<>|*?()\[\]`]*?\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)(?![A-Za-z0-9_])",
+        @"(?:[A-Za-z]:[\\/]|\\\\)?[^\s""'<>|*?()\[\]`]{0,260}?\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)(?![A-Za-z0-9_])",
         RegexOptions.IgnoreCase);
     // A listed extension at the end of a word; paths with spaces are found by trying starts to its left.
     static readonly Regex ExtensionEnd = new(@"\.(?:md|markdown|png|jpe?g|gif|svg|webp|bmp)(?![A-Za-z0-9_])", RegexOptions.IgnoreCase);
@@ -65,6 +66,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     // Find, plus the stretch of text that named the file (for telling a copied path from a passage).
     (string? Path, List<string> Matches, string? Source) FindWithSource(string text)
     {
+        text = Head(text);
         var candidates = new[] { text }
             .Concat(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             .Concat(SpacedCandidates(text))
@@ -92,20 +94,29 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     // One file named in a text, and the stretch of text that named it.
     public sealed record Hit(string Path, string Source);
 
-    const int MaxFiles = 20, MaxExtensions = 200;
+    // Only the part of a long text up to its first MaxNames listed extensions is looked at, so a pasted
+    // log full of file names stays quick.
+    const int MaxNames = 100;
 
-    // Every file the text names, in the order they appear, each once (at most MaxFiles): for each listed
+    static string Head(string text)
+    {
+        var m = ExtensionEnd.Match(text);
+        for (int n = 1; m.Success; n++, m = m.NextMatch())
+            if (n == MaxNames) return text[..(m.Index + m.Length)];
+        return text;
+    }
+
+    // Every file the text names, in the order they appear, each once, stopping at max: for each listed
     // extension, the longest stretch ending there that is a real path, else a file name / path tail with
     // one match under the root or a match in a remembered folder. Names with several matches are left out.
-    public List<Hit> FindAll(string text)
+    public List<Hit> FindAll(string text, int max = 20)
     {
         var found = new List<Hit>();
-        int seen = 0;
-        foreach (var line in text.Split('\n'))
+        foreach (var line in Head(text).Split('\n'))
         {
             foreach (Match ext in ExtensionEnd.Matches(line))
             {
-                if (++seen > MaxExtensions || found.Count == MaxFiles) return found;
+                if (found.Count == max) return found;
                 if (FileEndingAt(line, ext.Index + ext.Length) is { } hit && !found.Any(h => h.Path.Equals(hit.Path, StringComparison.OrdinalIgnoreCase)))
                     found.Add(hit);
             }
@@ -129,25 +140,30 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     }
 
     // What the clipboard text offers: one file (Path), a name with several matches (Matches), or several
-    // different files (Files, in text order); and whether it looks copied on purpose (Deliberate): at most
-    // maxExtra characters besides the paths, so "請看 docs/setup.md 這份" opens but a paragraph that happens
-    // to mention a file only offers it.
-    public sealed record Offer(string? Path, List<string> Matches, List<string> Files, bool Deliberate);
+    // different files (Files, in text order, at most listLimit; More when the text names even more); and
+    // whether it looks copied on purpose (Deliberate): at most maxExtra characters besides the paths, so
+    // "請看 docs/setup.md 這份" opens but a paragraph that happens to mention a file only offers it.
+    // listLimit 1 just finds the first file and whether there are others, without looking for them all.
+    public sealed record Offer(string? Path, List<string> Matches, List<string> Files, bool More, bool Deliberate);
 
-    public Offer Analyze(string text, int maxExtra)
+    public Offer Analyze(string text, int maxExtra, int listLimit = 5)
     {
         var (path, matches, source) = FindWithSource(text);
-        var all = FindAll(text);
+        var all = FindAll(text, listLimit + 1);
         if (all.Count > 1)
-            return new(null, [], all.Select(h => h.Path).ToList(), ExtraChars(text, all.Select(h => h.Source)) <= maxExtra);
-        return new(path, matches, [], ExtraChars(text, source is null ? [] : [source]) <= maxExtra);
+            return new(null, [], all.Take(listLimit).Select(h => h.Path).ToList(), all.Count > listLimit,
+                ExtraChars(text, all.Select(h => h.Source)) <= maxExtra);
+        return new(path, matches, [], false, ExtraChars(text, source is null ? [] : [source]) <= maxExtra);
     }
 
-    // The characters of the text outside the given stretches, not counting spaces, quotes and brackets.
+    // The characters of the text outside the given stretches and outside anything else that looks like a
+    // path (found or not: a copied list of paths is still a list of paths), not counting spaces, quotes
+    // and brackets.
     public static int ExtraChars(string text, IEnumerable<string> stretches)
     {
         foreach (var stretch in stretches.OrderByDescending(s => s.Length))
             if (text.IndexOf(stretch, StringComparison.Ordinal) is >= 0 and var at) text = text.Remove(at, stretch.Length);
+        text = PathToken.Replace(text, "");
         return text.Count(c => !char.IsWhiteSpace(c) && !"\"'`「」『』()（）<>[]".Contains(c));
     }
 
@@ -200,6 +216,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     void CollectDirs(IEnumerable<string> candidates)
     {
         SeenDirs.Clear();
+        recentNames = null;
         foreach (var candidate in candidates)
         {
             if (Resolve(candidate) is not { } path || !Path.IsPathFullyQualified(candidate.Trim().Trim('"', '\'', '`'))) continue;
@@ -212,6 +229,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     string? FindInRecentDirs(string tail)
     {
         var rel = tail.Replace('/', '\\');
+        if (!rel.Contains('\\')) return (recentNames ??= IndexRecentDirs()).GetValueOrDefault(rel);
         foreach (var dir in SeenDirs.Concat(recentDirs))
         {
             try
@@ -222,5 +240,24 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
             catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { }
         }
         return null;
+    }
+
+    // A bare file name is looked up in one listing of every remembered folder rather than by asking the
+    // disk about each folder for each name: file name -> its path in the first (most recent) folder.
+    Dictionary<string, string>? recentNames;
+
+    Dictionary<string, string> IndexRecentDirs()
+    {
+        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dir in SeenDirs.Concat(recentDirs))
+        {
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(dir))
+                    if (IsListed(file)) names.TryAdd(Path.GetFileName(file), file);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
+        }
+        return names;
     }
 }

@@ -117,7 +117,9 @@
       <fieldset>
         <legend>一次複製到多個檔案時</legend>
         <label><input type="radio" name="multi" value="list">列出來讓我選</label>
-        <label><input type="radio" name="multi" value="first">開第一個，並提示還有幾個</label>
+        <label><input type="radio" name="multi" value="first">開第一個，並提示還有其他檔案</label>
+        <label>最多列出<input type="number" name="max" min="2" max="50" step="1">個</label>
+        <p class="note">「開第一個」找到第一個就停，按「列出」時才找其他的。</p>
       </fieldset>
     </form>
   </div>

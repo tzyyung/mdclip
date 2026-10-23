@@ -133,7 +133,8 @@ sealed class ThemeSettings
     public List<string> Dirs = [];
     public string Clip = "auto";      // clipboard paths: auto (open), hint, off
     public int ClipChars = 30;        // auto-open only when at most this many other characters were copied with the path
-    public string ClipMulti = "list"; // several files copied: list (let me pick) or first (open it, say how many more)
+    public string ClipMulti = "list"; // several files copied: list (let me pick) or first (open it, say there are more)
+    public int ClipMax = 5;           // at most this many files in that list
     public bool TrayHintShown;        // the "still running in the tray" notice was shown once
     public List<HistoryEntry> History = []; // most recently read first
 
@@ -152,6 +153,7 @@ sealed class ThemeSettings
                 else if (key == "clip" && value is "auto" or "hint" or "off") s.Clip = value;
                 else if (key == "clipchars" && int.TryParse(value, out var chars) && chars >= 0) s.ClipChars = chars;
                 else if (key == "clipmulti" && value is "list" or "first") s.ClipMulti = value;
+                else if (key == "clipmax" && int.TryParse(value, out var max) && max is >= 2 and <= 50) s.ClipMax = max;
                 else if (key == "trayhint") s.TrayHintShown = value == "1";
                 else if (key == "dir" && value.Length > 0) s.Dirs.Add(value);
                 else if (key == "hist" && HistoryEntry.Parse(value) is { } h) s.History.Add(h);
@@ -167,7 +169,7 @@ sealed class ThemeSettings
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
             File.WriteAllLines(FilePath,
-                [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", $"clip={Clip}", $"clipchars={ClipChars}", $"clipmulti={ClipMulti}", $"trayhint={(TrayHintShown ? 1 : 0)}", .. Dirs.Select(d => $"dir={d}"), .. History.Select(h => $"hist={h}")]);
+                [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", $"clip={Clip}", $"clipchars={ClipChars}", $"clipmulti={ClipMulti}", $"clipmax={ClipMax}", $"trayhint={(TrayHintShown ? 1 : 0)}", .. Dirs.Select(d => $"dir={d}"), .. History.Select(h => $"hist={h}")]);
         }
         catch (IOException) { }
     }

@@ -118,7 +118,7 @@ const layout = Object.assign(
   store.get("layout", {}), { clip: cfg.clip ?? "auto" }); // the host owns the clipboard mode (the tray menu sets it too)
 // Also the host's: how many other characters may come with a path for it to open by itself, and what
 // to do when one copy names several files ("list" them, or open the "first").
-const clipOpts = { chars: cfg.clipChars ?? 30, multi: cfg.clipMulti ?? "list" };
+const clipOpts = { chars: cfg.clipChars ?? 30, multi: cfg.clipMulti ?? "list", max: cfg.clipMax ?? 5 };
 
 function applyLayout() {
   body.classList.toggle("no-side", !layout.side);
@@ -639,16 +639,18 @@ function renderPalette(message) {
   list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 }
 
-// Several files from one copy: list just those, in the order they were copied.
-function openPick(files) {
+// Several files from one copy: list just those, in the order they were copied (more: the copy names
+// even more than the list holds).
+function openPick(files, more = false) {
   pal.pick = files;
+  pal.pickMore = more;
   openPalette("", "pick");
   updatePalette();
 }
 
 function updatePick() {
   const q = $("palette-input").value.trim().toLowerCase();
-  pal.note = `剪貼簿裡有 ${pal.pick.length} 個檔案`;
+  pal.note = pal.pickMore ? `剪貼簿裡的檔案超過 ${pal.pick.length} 個，只列出前 ${pal.pick.length} 個` : `剪貼簿裡有 ${pal.pick.length} 個檔案`;
   pal.items = pal.pick.filter((f) => !q || (f.rel ?? f.path).toLowerCase().includes(q)).map((f) => {
     const p = (f.rel ?? f.path).replaceAll("\\", "/");
     const dir = f.rel ? p.slice(0, Math.max(0, p.lastIndexOf("/"))) || cfg.name : histDir(f.path);
@@ -914,6 +916,7 @@ function openClipSettings() {
   f.mode.value = layout.clip;
   f.chars.value = clipOpts.chars;
   f.multi.value = clipOpts.multi;
+  f.max.value = clipOpts.max;
   $("clipset").hidden = false;
   $("clipset-close").focus();
 }
@@ -929,11 +932,13 @@ $("clipset-form").addEventListener("submit", (e) => e.preventDefault());
 $("clipset-form").addEventListener("change", (e) => {
   const f = $("clipset-form").elements;
   if (e.target.name === "mode") { setClipMode(f.mode.value); return; }
-  const chars = Math.round(Number(f.chars.value));
+  const chars = Math.round(Number(f.chars.value)), max = Math.round(Number(f.max.value));
   if (Number.isFinite(chars) && chars >= 0) clipOpts.chars = chars;
+  if (Number.isFinite(max)) clipOpts.max = Math.min(50, Math.max(2, max));
   f.chars.value = clipOpts.chars;
+  f.max.value = clipOpts.max;
   clipOpts.multi = f.multi.value;
-  post({ type: "clipOptions", chars: clipOpts.chars, multi: clipOpts.multi });
+  post({ type: "clipOptions", chars: clipOpts.chars, multi: clipOpts.multi, max: clipOpts.max });
 });
 
 // ---------- full-text search ----------
@@ -1524,14 +1529,18 @@ function onClipboard(m) {
   if (!m.fromSelf && m.deliberate !== false) post({ type: "raise" }); // copied elsewhere: make sure the viewer is visible
   const CLIP_MS = "interact";
   if (m.files) {
-    const n = m.files.length, pick = () => openPick(m.files);
+    const n = m.files.length, pick = () => openPick(m.files, m.more);
     if (m.force && clipOpts.multi === "list") { pick(); return; }
     if (!offerOnly && clipOpts.multi === "first") {
       openClipFile(m.files[0]);
-      toast(`已從剪貼簿開啟：${m.files[0].rel ?? m.files[0].path}，還有 ${n - 1} 個`, { label: "選擇", run: pick }, CLIP_MS);
+      // From text only the first was looked for; the host finds the rest when asked.
+      const label = m.files[0].rel ?? m.files[0].path;
+      if (n === 1) toast(`已從剪貼簿開啟：${label}，剪貼簿裡還有其他檔案`, { label: "列出", run: () => post({ type: "clipList" }) }, CLIP_MS);
+      else toast(`已從剪貼簿開啟：${label}，還有 ${m.more ? "超過 " : ""}${n - 1} 個`, { label: "選擇", run: pick }, CLIP_MS);
       return;
     }
-    toast(`剪貼簿裡有 ${n} 個檔案`, { label: "選擇", run: pick }, CLIP_MS);
+    if (n === 1) { toast("剪貼簿裡提到多個檔案", { label: "列出", run: () => post({ type: "clipList" }) }, CLIP_MS); return; } // "open the first" only looked for the first
+    toast(`剪貼簿裡有${m.more ? "超過 " : " "}${n} 個檔案`, { label: "選擇", run: pick }, CLIP_MS);
     return;
   }
   if (m.matches) {
@@ -1633,6 +1642,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "open": navigate(m.rel); break;
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
+    case "clipPick": openPick(m.files, m.more); break;
     case "history": state.history = m.items; break;
     case "searchResults": onSearchResults(m); break;
     case "clipMode": layout.clip = m.mode; store.set("layout", layout); break;

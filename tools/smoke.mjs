@@ -167,6 +167,37 @@ await check("clipboard settings change what opens by itself", async () => {
   expect(await js("clipOpts.chars") === before, "not restored");
 });
 
+// Changes the clipboard settings through their panel, as a user would.
+const setClipOptions = (opts) => js(`(() => {
+  openClipSettings();
+  const f = $('clipset-form').elements, o = ${JSON.stringify(opts)};
+  for (const k in o) f[k].value = o[k];
+  f.max.dispatchEvent(new Event('change', { bubbles: true }));
+  closeClipSettings();
+})()`);
+
+await check("clipboard: list limit and open-the-first", async () => {
+  const before = await js("({ multi: clipOpts.multi, max: clipOpts.max })");
+  const three = ["guide.md", "evil.md", "other.md"].map((n) => path.join(fixtures, n)).join("\n");
+  try {
+    await setClipOptions({ multi: "list", max: 2 });
+    setClipboard(three);
+    await waitFor("!$('toast').hidden && $('toast').textContent.includes('超過 2 個檔案')", 5000);
+    await js("$('toast').querySelector('.act').click()");
+    expect(await js("pal.items.length === 2 && pal.note.includes('只列出前 2 個')"), "list: " + await js("pal.note"));
+    await js("closePalette()");
+
+    await setClipOptions({ multi: "first", max: 5 });
+    setClipboard(three);
+    await waitFor(`state.current === ${JSON.stringify(rel("guide.md"))} && $('toast').textContent.includes('還有其他檔案')`, 5000);
+    await js("$('toast').querySelector('.act').click()");
+    await waitFor("pal.mode === 'pick' && !$('palette').hidden && pal.items.length === 3", 5000);
+    await js("closePalette()");
+  } finally {
+    await setClipOptions(before);
+  }
+});
+
 await check("quick open finds a file", async () => {
   await js("openPalette('othe')");
   const subs = await js("pal.items.map(i => i.rel ?? '')");
