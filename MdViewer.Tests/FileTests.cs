@@ -47,7 +47,7 @@ public sealed class SafePathTests(Tree tree) : IClassFixture<Tree>
     [Fact]
     public void Remembered_folder_on_an_unreachable_share_does_not_hold_up_a_lookup()
     {
-        var finder = new PathFinder(tree.Root, tree.Known(), [DeadShare + @"\docs", tree.Outside]);
+        var finder = tree.Finder(DeadShare + @"\docs", tree.Outside);
         var sw = Stopwatch.StartNew();
         Assert.Equal(Path.Combine(tree.Outside, "archive.md"), finder.Find("archive.md").Path);
         Assert.True(sw.ElapsedMilliseconds < 2000, $"took {sw.ElapsedMilliseconds} ms");

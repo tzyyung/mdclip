@@ -100,34 +100,26 @@ sealed class MainForm : Form
         };
 
         SetupTray();
-        lastOpened = ChooseRoot(startPath);
+        OpenStart(startPath);
     }
 
     internal static readonly Icon AppIcon = LoadAppIcon();
 
     static Icon LoadAppIcon() => new(new MemoryStream(ResourceBytes("app.ico")!));
 
-    // Returns the file to open first: the start path if it is a file; with no start path, the last
-    // file read if it is still there under the last root (so a restart comes back to the same page).
-    string? ChooseRoot(string? startPath)
+    // The first thing shown: the start path (a file or a folder); with none, the last file read if it is still
+    // there under the last root, at its reading position (so a restart comes back to the same page); failing
+    // those, the last root.
+    void OpenStart(string? startPath)
     {
-        if (startPath is null && SafePath.DirectoryExists(settings.Root)
-            && settings.History.FirstOrDefault() is { } last && SafePath.FileExists(last.Path) && IsUnder(last.Path, settings.Root))
+        if (startPath is not null) OpenAny(Path.GetFullPath(startPath));
+        else if (SafePath.DirectoryExists(settings.Root) && settings.History.FirstOrDefault() is { } last
+                 && IsUnder(last.Path, settings.Root) && SafePath.FileExists(last.Path))
         {
             SetRoot(settings.Root);
-            startScroll = last.Scroll;
-            return last.Path;
+            OpenAny(last.Path, last.Scroll);
         }
-        if (startPath is not null && SafePath.FileExists(startPath))
-        {
-            var full = Path.GetFullPath(startPath);
-            OpenFile(full);
-            return full;
-        }
-        if (startPath is not null && SafePath.DirectoryExists(startPath)) SetRoot(startPath);
-        else if (SafePath.DirectoryExists(settings.Root)) SetRoot(settings.Root);
-        else SetRoot(Environment.CurrentDirectory);
-        return null;
+        if (root.Length == 0) SetRoot(SafePath.DirectoryExists(settings.Root) ? settings.Root : Environment.CurrentDirectory);
     }
 
     // ---------- web view: created when the window shows, released when it hides ----------
@@ -328,8 +320,7 @@ sealed class MainForm : Form
     // From the tray's "最近讀過": opens at the last reading position.
     void OpenRecent(HistoryEntry h)
     {
-        if (web is null) { lastOpened = h.Path; startScroll = h.Scroll; }
-        else PostWhenReady(new { type = "openHistory", path = h.Path, scroll = h.Scroll });
+        OpenAny(h.Path, h.Scroll);
         ShowFromTray(activate: true);
     }
 
@@ -438,14 +429,16 @@ sealed class MainForm : Form
         return result;
     }
 
-    // Shows what a path names, however it arrived (another launch, a drop, the file dialog): a folder becomes
-    // the root, a file opens.
-    void OpenAny(string path)
+    // Shows what a path names, however it arrived (the command line, another launch, a drop, the file dialog,
+    // the tray's recent files): a folder becomes the root; a file opens, at a reading position if given.
+    void OpenAny(string path, int scroll = 0)
     {
-        if (SafePath.DirectoryExists(path)) SetRoot(path);
-        else if (!SafePath.FileExists(path)) return;
-        else if (web is null) lastOpened = path; // the page about to load opens it
-        else PostWhenReady(new { type = "open", rel = OpenFile(path) });
+        if (SafePath.DirectoryExists(path)) { SetRoot(path); return; }
+        if (!SafePath.FileExists(path)) return;
+        var rel = OpenFile(path);
+        if (web is not null) { PostWhenReady(new { type = "open", rel, scroll }); return; }
+        lastOpened = path; // the page about to load opens it
+        startScroll = scroll;
     }
 
     // For a path the page asked for: a folder becomes the root (null), a file is opened by the page.
@@ -762,8 +755,7 @@ sealed class MainForm : Form
             if (Clipboard.ContainsFileDropList())
             {
                 var copied = Clipboard.GetFileDropList().Cast<string>().Where(f => IsListed(f) && SafePath.FileExists(f)).Take(settings.ClipMax + 1).ToList();
-                if (copied.Count == 1) found = copied[0];
-                else (files, more) = (copied.Take(settings.ClipMax).ToList(), copied.Count > settings.ClipMax);
+                (found, matches, files, more, deliberate) = Offer.ForFiles(copied, settings.ClipMax);
             }
             else if (Clipboard.ContainsText() && Clipboard.GetText() is { Length: <= MaxClipboardText } text)
             {
@@ -800,7 +792,8 @@ sealed class MainForm : Form
             fromSelf,
             force,
         };
-        var action = ClipboardPolicy.Decide(settings.Clip, settings.ClipMulti, deliberate, files.Count > 0, force: false);
+        ClipAction Decide(bool force) => ClipboardPolicy.Decide(settings.Clip, settings.ClipMulti, deliberate, files.Count > 0, force);
+        var action = Decide(force: false);
         if (action == ClipAction.None) return;
         if (Visible)
         {
@@ -813,7 +806,7 @@ sealed class MainForm : Form
         if (!ClipboardPolicy.Raises(action)) return;
         if (ClipboardPolicy.Notifies(action))
         {
-            hintedClipboard = Message(ClipboardPolicy.Decide(settings.Clip, settings.ClipMulti, deliberate, files.Count > 0, force: true), true);
+            hintedClipboard = Message(Decide(force: true), true);
             var (title, body) = files.Count > 0
                 ? ($"剪貼簿裡有{(more ? "超過 " : " ")}{files.Count} 個可以開啟的檔案", "點這裡選擇")
                 : ("剪貼簿裡有可以開啟的檔案", $"{Path.GetFileName(found ?? matches[0])}（點這裡開啟）");
@@ -873,7 +866,8 @@ sealed class MainForm : Form
     void OnResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
     {
         var env = ((CoreWebView2)sender!).Environment;
-        var rel = Uri.UnescapeDataString(new Uri(e.Request.Uri).AbsolutePath.TrimStart('/'));
+        var uri = new Uri(e.Request.Uri);
+        var rel = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/'));
         try
         {
             if (rel.StartsWith("__app/"))
@@ -907,7 +901,6 @@ sealed class MainForm : Form
                 e.Response = Html(env, pages.Error("找不到檔案", rel), 404);
                 return;
             }
-            var uri = new Uri(e.Request.Uri);
             if (IsImage(path) && uri.Query.Contains("view"))
             {
                 e.Response = Html(env, pages.Image(uri.AbsolutePath, Path.GetFileName(path)));
@@ -946,7 +939,6 @@ sealed class MainForm : Form
                     lastLight = settings.LastLight,
                     lastDark = settings.LastDark,
                     systemDark = Themes.SystemIsDark(),
-                    appName = AppInfo.Name,
                     autoTheme = Themes.Auto,
                     clip = settings.Clip,
                     clipChars = settings.ClipChars,

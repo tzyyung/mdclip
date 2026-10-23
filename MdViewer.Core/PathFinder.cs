@@ -163,7 +163,14 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
     // whether it looks copied on purpose (Deliberate): at most maxExtra characters besides the paths, so
     // "請看 docs/setup.md 這份" opens but a paragraph that happens to mention a file only offers it.
     // listLimit 1 just finds the first file and whether there are others, without looking for them all.
-    public sealed record Offer(string? Path, List<string> Matches, List<string> Files, bool More, bool Deliberate);
+    public sealed record Offer(string? Path, List<string> Matches, List<string> Files, bool More, bool Deliberate)
+    {
+        // For files known to exist (copied in Explorer, or found in a text): one is the Path; more are the
+        // Files, at most listLimit of them, More when there were more.
+        public static Offer ForFiles(IReadOnlyList<string> files, int listLimit, bool deliberate = true) =>
+            files.Count == 1 ? new(files[0], [], [], false, deliberate)
+            : new(null, [], files.Take(listLimit).ToList(), files.Count > listLimit, deliberate);
+    }
 
     public Offer Analyze(string text, int maxExtra, int listLimit = 5)
     {
@@ -171,8 +178,7 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
         var (path, matches, source) = FindWithSource(scan);
         var all = FindAll(scan, listLimit + 1);
         if (all.Count > 1)
-            return new(null, [], all.Take(listLimit).Select(h => h.Path).ToList(), all.Count > listLimit,
-                ExtraChars(text, all.Select(h => h.Source)) <= maxExtra);
+            return Offer.ForFiles(all.Select(h => h.Path).ToList(), listLimit, ExtraChars(text, all.Select(h => h.Source)) <= maxExtra);
         return new(path, matches, [], false, ExtraChars(text, source is null ? [] : [source]) <= maxExtra);
     }
 

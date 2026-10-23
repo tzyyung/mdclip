@@ -13,7 +13,7 @@ public sealed class SpeedTests(Tree tree) : IClassFixture<Tree>
         var dirs = Enumerable.Range(0, 200).Select(i => Path.Combine(tree.Outside, "d" + i)).ToList();
         var words = string.Join(" ", Enumerable.Range(0, 2000).Select(i => i % 7 == 0 ? $"notes{i}.md" : "字"));
         var text = (words + " ").PadRight(20_000, '字')[..20_000];
-        var finder = new PathFinder(tree.Root, tree.Known(), dirs);
+        var finder = tree.Finder([.. dirs]);
         finder.Analyze("warm up", 30);
         var sw = Stopwatch.StartNew();
         finder.Analyze(text, 30);

@@ -32,12 +32,9 @@ public sealed class DocumentTreeTests(Tree tree) : IClassFixture<Tree>
     [Fact]
     public void Folders_first_then_files_and_skipped_or_empty_folders_left_out()
     {
-        Directory.CreateDirectory(tree.In(@"node_modules\pkg"));
-        File.WriteAllText(tree.In(@"node_modules\pkg\readme.md"), "x");
-        Directory.CreateDirectory(tree.In(".git"));
-        File.WriteAllText(tree.In(@".git\x.md"), "x");
-        Directory.CreateDirectory(tree.In("empty"));
-        File.WriteAllText(tree.In(@"empty\notes.txt"), "x");
+        tree.Write(@"node_modules\pkg\readme.md");
+        tree.Write(@".git\x.md");
+        tree.Write(@"empty\notes.txt");
 
         var items = DocumentTree.Build(tree.Root);
         var names = items.Select(i => i.Name).ToList();
@@ -64,7 +61,7 @@ public sealed class DocumentSearchTests(Tree tree) : IClassFixture<Tree>
     [Fact]
     public void Hits_count_occurrences_as_the_page_does()
     {
-        File.WriteAllText(tree.In("search.md"), "門檻 one\n```mermaid\ngraph 門檻\n```\n門檻 two 門檻\n");
+        tree.Write("search.md", "門檻 one\n```mermaid\ngraph 門檻\n```\n門檻 two 門檻\n");
         var result = new DocumentSearch().Run(tree.Root, ["search.md", "pics/dot.png"], "門檻");
         Assert.Equal(4, result.Total);
         Assert.Equal(1, result.Files);
@@ -77,9 +74,9 @@ public sealed class DocumentSearchTests(Tree tree) : IClassFixture<Tree>
     public void A_changed_file_is_read_again()
     {
         var search = new DocumentSearch();
-        File.WriteAllText(tree.In("change.md"), "alpha");
+        tree.Write("change.md", "alpha");
         Assert.Equal(1, search.Run(tree.Root, ["change.md"], "alpha").Total);
-        File.WriteAllText(tree.In("change.md"), "beta");
+        tree.Write("change.md", "beta");
         File.SetLastWriteTimeUtc(tree.In("change.md"), DateTime.UtcNow.AddMinutes(1));
         Assert.Equal(0, search.Run(tree.Root, ["change.md"], "alpha").Total);
     }
@@ -104,7 +101,7 @@ public sealed class DocumentPagesTests(Tree tree) : IClassFixture<Tree>
     [Fact]
     public void Markdown_with_front_matter_and_heading_ids()
     {
-        File.WriteAllText(tree.In("page.md"), "---\ntitle: T\n---\n# 標題\n");
+        tree.Write("page.md", "---\ntitle: T\n---\n# 標題\n");
         var html = pages.Document(tree.In("page.md"));
         Assert.Contains("class=\"frontmatter\"", html);
         Assert.Contains("id=\"標題\"", html);
@@ -114,7 +111,7 @@ public sealed class DocumentPagesTests(Tree tree) : IClassFixture<Tree>
     [Fact]
     public void A_big_document_is_marked()
     {
-        File.WriteAllText(tree.In("big.md"), string.Concat(Enumerable.Repeat("段落文字。\n\n", DocumentPages.BigPage / 8)));
+        tree.Write("big.md", string.Concat(Enumerable.Repeat("段落文字。\n\n", DocumentPages.BigPage / 8)));
         Assert.Contains("<body class=\"big\">", pages.Document(tree.In("big.md")));
     }
 

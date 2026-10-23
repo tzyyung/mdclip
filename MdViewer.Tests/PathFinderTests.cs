@@ -2,45 +2,9 @@ using MdViewer;
 
 namespace MdViewer.Tests;
 
-// A throwaway folder tree standing in for a docs repo plus one folder outside it:
-//   root\docs\setup.md            root\guide.md          root\a\notes.md, root\b\notes.md (same name twice)
-//   root\project\docs\readme.md root\pics\dot.png      root\My Docs\a b.md
-//   outside\archive.md    outside\notes.md      outside\setup.md
-public sealed class Tree : IDisposable
-{
-    public string Root { get; }
-    public string Outside { get; }
-
-    public Tree()
-    {
-        var top = Path.Combine(Path.GetTempPath(), "mdviewer-tests-" + Guid.NewGuid().ToString("N")[..8]);
-        Root = Path.Combine(top, "root");
-        Outside = Path.Combine(top, "outside");
-        foreach (var file in new[] { @"docs\setup.md", "guide.md", @"a\notes.md", @"b\notes.md", @"project\docs\readme.md", @"pics\dot.png", @"My Docs\a b.md" })
-            Write(Path.Combine(Root, file));
-        Write(Path.Combine(Outside, "archive.md"));
-        Write(Path.Combine(Outside, "notes.md"));
-        Write(Path.Combine(Outside, "setup.md"));
-    }
-
-    static void Write(string path)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, "# x");
-    }
-
-    public string In(string rel) => Path.Combine(Root, rel);
-
-    // The relative paths the app's tree scan would list for the root.
-    public List<string> Known() => Directory.EnumerateFiles(Root, "*", SearchOption.AllDirectories)
-        .Select(f => Path.GetRelativePath(Root, f).Replace('\\', '/')).ToList();
-
-    public void Dispose() => Directory.Delete(Path.GetDirectoryName(Root)!, recursive: true);
-}
-
 public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
 {
-    PathFinder Finder(params string[] recentDirs) => new(tree.Root, tree.Known(), recentDirs);
+    PathFinder Finder(params string[] recentDirs) => tree.Finder(recentDirs);
 
     string? Found(string text, params string[] recentDirs) => Finder(recentDirs).Find(text).Path;
 
@@ -109,7 +73,7 @@ public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
     [Fact]
     public void Chinese_file_name()
     {
-        File.WriteAllText(tree.In("會議紀錄.md"), "# x");
+        tree.Write("會議紀錄.md");
         Assert.Equal(tree.In("會議紀錄.md"), Found("會議紀錄.md"));
     }
 

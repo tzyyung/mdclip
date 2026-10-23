@@ -83,6 +83,10 @@ const urlOf = (rel) => "/" + rel.split("/").map(encodeURIComponent).join("/") + 
 const relOf = (pathname) => decodeURIComponent(pathname.replace(/^\//, ""));
 const baseName = (rel) => rel.slice(rel.lastIndexOf("/") + 1);
 const fileIcon = (rel) => (isImage(rel) ? "image" : "file");
+// What the host marked a page as: a picture in the zoom viewer, or a document big enough that off-screen
+// parts are only estimated (doc.css).
+const isImagePage = (doc) => !!doc.body?.classList.contains("image-page");
+const isBigPage = (doc) => !!doc.body?.classList.contains("big");
 
 // Full Windows paths (the reading history, the clipboard, copied links) against the open folder.
 const rootDir = () => cfg.root.replace(/\\$/, "");
@@ -176,7 +180,7 @@ const ZOOMS = [0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 function applyZoom(doc = frame.contentDocument) {
   $("zoom-reset").textContent = Math.round(layout.zoom * 100) + "%";
-  if (!doc?.body || doc.body.classList.contains("image-page")) return;
+  if (!doc?.body || isImagePage(doc)) return;
   // Keep the reading position: restore the same fraction of the page after reflow.
   const root = doc.documentElement, win = doc.defaultView;
   const ratio = root.scrollHeight > win.innerHeight ? win.scrollY / (root.scrollHeight - win.innerHeight) : 0;
@@ -359,7 +363,7 @@ const anchorKey = (y) => `${cfg.root}|${state.current}|${y}`;
 
 function readPosition() {
   const win = frame.contentWindow, doc = win.document, y = Math.round(win.scrollY);
-  const blocks = doc.body?.classList.contains("big") && doc.querySelector("main")?.children;
+  const blocks = isBigPage(doc) && doc.querySelector("main")?.children;
   if (blocks?.length) {
     const i = lastAbove(blocks.length, (k) => blocks[k], 0);
     anchors[anchorKey(y)] = [i, Math.round(-blocks[i].getBoundingClientRect().top)];
@@ -370,7 +374,7 @@ function readPosition() {
 }
 
 function applyPosition(win, y, frames = 4) {
-  const a = win.document.body.classList.contains("big") ? anchors[anchorKey(y)] : null;
+  const a = isBigPage(win.document) ? anchors[anchorKey(y)] : null;
   const block = a && win.document.querySelector("main")?.children[a[0]];
   if (!block) { win.scrollTo(0, y); return; }
   block.scrollIntoView({ block: "start" });
@@ -460,7 +464,7 @@ frame.addEventListener("load", () => {
   if (state.hist[state.at]?.rel !== rel) pushHist(rel, 0); // safety net for a navigation we did not start
   state.current = rel;
   doc.documentElement.dataset.theme = document.documentElement.dataset.theme;
-  if (!doc.body.classList.contains("image-page")) doc.body.style.zoom = layout.zoom;
+  if (!isImagePage(doc)) doc.body.style.zoom = layout.zoom;
   hookDoc(doc);
   collectHeadings(doc);
   renderToc(isImage(rel) ? "圖片沒有大綱" : undefined);
@@ -509,7 +513,7 @@ function linkTarget(a, doc) {
 }
 
 function hookDoc(doc) {
-  listenTo(doc, { zoomWheel: !doc.body.classList.contains("image-page") });
+  listenTo(doc, { zoomWheel: !isImagePage(doc) });
   doc.addEventListener("mousedown", closeMenus);
   doc.addEventListener("click", (e) => {
     const pic = e.target.closest("main img");
@@ -1130,7 +1134,7 @@ function runFind(nth = 0) {
   const q = $("find-input").value.toLowerCase();
   const doc = frame.contentDocument, win = frame.contentWindow;
   const main = doc?.querySelector("main");
-  if (q && main && !doc.body.classList.contains("image-page") && win.Highlight) {
+  if (q && main && !isImagePage(doc) && win.Highlight) {
     const { nodes, hay } = textIndex(doc, main);
     // The node holding character `off`; an end offset may sit at the very end of the previous node.
     const at = (off, isEnd) => {
@@ -1189,7 +1193,7 @@ $("find-close").onclick = closeFind;
 // ---------- code colours and diagrams ----------
 
 function highlightCode(doc) {
-  if (!window.hljs || doc.body.classList.contains("image-page")) return;
+  if (!window.hljs || isImagePage(doc)) return;
   for (const code of doc.querySelectorAll("pre > code[class*='language-']")) {
     const lang = /language-([\w+#-]+)/.exec(code.className)?.[1].toLowerCase();
     if (!lang || lang === "mermaid" || !hljs.getLanguage(lang)) continue;
@@ -1203,7 +1207,7 @@ let diagramSeq = 0;
 // Diagram colours come from the document's own theme variables.
 // Copy buttons on code blocks and a link button beside each heading.
 function addDocButtons(doc) {
-  if (doc.body.classList.contains("image-page")) return;
+  if (isImagePage(doc)) return;
   const button = (cls, title, ic) => {
     const b = doc.createElement("button");
     b.type = "button";
@@ -1474,8 +1478,8 @@ $("more-menu").addEventListener("click", (e) => {
   if (!b) return;
   closeMenus();
   const act = b.dataset.act;
-  if (act === "file") post({ type: "pickFile" });
-  else if (act === "folder") post({ type: "pickFolder" });
+  if (act === "file") KEYS.openFile.run();
+  else if (act === "folder") KEYS.openFolder.run();
   else if (act === "reveal") post({ type: "reveal", rel: state.current });
   else if (act === "reload") reloadAll();
   else if (act === "pdf") exportPdf();
@@ -1751,7 +1755,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
       // Show the folder's active tab unless an "open" for a file there follows right away.
       setTimeout(() => { if (!state.current && !state.pending) openActiveTab(); }, 60);
       break;
-    case "open": openDoc(m.rel); break;
+    case "open": openDoc(m.rel, { scroll: m.scroll ?? 0 }); break;
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
     case "clipPick": openPick(m.files, m.more); break;
@@ -1759,7 +1763,6 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "searchResults": onSearchResults(m); break;
     case "clipMode": layout.clip = m.mode; saveLayout(); break;
     case "clipOptions": Object.assign(clipOpts, { chars: m.chars, multi: m.multi, max: m.max }); showClipOptions(); break;
-    case "openHistory": openHistory(m.path, m.scroll); break;
     case "exported": onExported(m); break;
     case "system":
       cfg.systemDark = m.dark;
@@ -1786,27 +1789,17 @@ setIcon("find-prev", "up");
 setIcon("find-next", "down");
 setIcon("find-close", "close");
 
-// Buttons that stand for a shortcut say so in their tooltip, and key labels show the key, from KEYS.
-for (const el of document.querySelectorAll("[data-key]")) el.title = withKey(el.dataset.key);
+// Buttons that stand for a shortcut (data-key) say so in their tooltip and, unless wired otherwise above, do
+// what the shortcut does; key labels show the key. All from KEYS.
+for (const el of document.querySelectorAll("[data-key]")) {
+  const action = KEYS[el.dataset.key];
+  el.title = withKey(el.dataset.key);
+  if (!el.onclick && action.run) el.onclick = (e) => action.run(e);
+}
 for (const el of document.querySelectorAll("kbd[data-keys]")) el.textContent = keyOf(el.dataset.keys);
 
-$("back").onclick = () => go(-1);
-$("forward").onclick = () => go(1);
-$("reload").onclick = reloadAll;
-$("history").onclick = openHistoryMenu;
-$("search").onclick = () => openPalette();
-$("toggle-side").onclick = toggleSide;
-$("toggle-toc").onclick = toggleToc;
-$("toggle-zen").onclick = toggleZen;
-$("dark").onclick = toggleDark;
 $("theme").onclick = openThemeMenu;
 $("more").onclick = openMoreMenu;
-$("change-root").onclick = () => post({ type: "pickFolder" });
-$("empty-search").onclick = () => openPalette();
-$("empty-folder").onclick = () => post({ type: "pickFolder" });
-$("zoom-out").onclick = () => zoomStep(-1);
-$("zoom-in").onclick = () => zoomStep(1);
-$("zoom-reset").onclick = () => zoomStep(0);
 listenTo(document);
 
 setupPeek("hot-left", $("side"), "peek-left");
