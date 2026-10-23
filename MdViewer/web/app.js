@@ -116,6 +116,9 @@ const toggleDark = () => applyTheme(resolveTheme(state.theme).dark ? state.lastL
 const layout = Object.assign(
   { side: true, toc: true, zen: false, sideW: 288, tocW: 252, kind: "all", zoom: 1, clip: "auto" },
   store.get("layout", {}), { clip: cfg.clip ?? "auto" }); // the host owns the clipboard mode (the tray menu sets it too)
+// Also the host's: how many other characters may come with a path for it to open by itself, and what
+// to do when one copy names several files ("list" them, or open the "first").
+const clipOpts = { chars: cfg.clipChars ?? 30, multi: cfg.clipMulti ?? "list" };
 
 function applyLayout() {
   body.classList.toggle("no-side", !layout.side);
@@ -532,6 +535,10 @@ const PALETTE_MODES = {
     placeholder: "輸入檔名搜尋、貼上路徑，或用 # 跳到本篇標題",
     foot: "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>Enter</kbd> 開啟</span><span><kbd>#</kbd> 本篇標題</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F</kbd> 搜尋內文</span>",
   },
+  pick: {
+    placeholder: "剪貼簿裡的檔案：輸入文字篩選",
+    foot: "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>Enter</kbd> 開啟</span><span><kbd>Ctrl</kbd><kbd>Enter</kbd> 在新分頁開啟</span>",
+  },
   text: {
     placeholder: "搜尋所有文件的內文",
     foot: "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>Enter</kbd> 開啟並跳到那一處</span><span><kbd>Ctrl</kbd><kbd>P</kbd> 改搜檔名</span>",
@@ -594,6 +601,7 @@ const markIdx = (s, idx) => { const set = new Set(idx); return [...s].map((c, i)
 
 function updatePalette() {
   if (pal.mode === "text") { updateTextSearch(); return; }
+  if (pal.mode === "pick") { updatePick(); return; }
   pal.note = "";
   const q = $("palette-input").value.trim();
   const items = [];
@@ -631,9 +639,35 @@ function renderPalette(message) {
   list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 }
 
+// Several files from one copy: list just those, in the order they were copied.
+function openPick(files) {
+  pal.pick = files;
+  openPalette("", "pick");
+  updatePalette();
+}
+
+function updatePick() {
+  const q = $("palette-input").value.trim().toLowerCase();
+  pal.note = `剪貼簿裡有 ${pal.pick.length} 個檔案`;
+  pal.items = pal.pick.filter((f) => !q || (f.rel ?? f.path).toLowerCase().includes(q)).map((f) => {
+    const p = (f.rel ?? f.path).replaceAll("\\", "/");
+    const dir = f.rel ? p.slice(0, Math.max(0, p.lastIndexOf("/"))) || cfg.name : histDir(f.path);
+    return { kind: "pick", rel: f.rel, path: f.path, icon: fileIcon(p), title: esc(baseName(p)), sub: esc(dir) };
+  });
+  pal.sel = 0;
+  renderPalette();
+}
+
+// A file from the clipboard: under the root it opens directly, elsewhere the host switches folders first.
+function openClipFile(f, newTab = false, hash = "") {
+  if (f.rel) { if (newTab) openInNewTab(f.rel, hash); else navigate(f.rel, hash); }
+  else post({ type: "resolve", text: f.path + hash, id: (pal.pendingId = "clip" + Date.now()) });
+}
+
 // newTab: Ctrl+Enter or Ctrl+click opens the file in a new tab.
 function choose(it, newTab = false) {
   if (!it) return;
+  if (it.kind === "pick") { closePalette(); openClipFile(it, newTab); return; }
   if (it.kind === "file") { closePalette(); if (newTab) openInNewTab(it.rel); else navigate(it.rel); }
   else if (it.kind === "heading") { closePalette(); scrollToHash(it.id, true); }
   else if (it.kind === "hist") { closePalette(); openHistory(it.path, it.scroll); }
@@ -844,7 +878,7 @@ const HELP = [
     ["更多選單", "匯出 PDF、複製檔案路徑、在檔案總管顯示"],
   ]],
   ["剪貼簿與背景", [
-    ["複製路徑", "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；可在更多選單或系統匣改成只提示或不理會"],
+    ["複製路徑", "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；路徑夾在一大段文字裡只提示，一次複製多個檔案會列出來讓你選。在「更多 → 剪貼簿設定」調整"],
     ["✕ 關閉", "縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」"],
     ["系統匣選單", "最近讀過的檔案、開機時在背景啟動"],
   ]],
@@ -865,6 +899,42 @@ function closeHelp() {
 
 $("help-close").onclick = closeHelp;
 $("help").addEventListener("mousedown", (e) => { if (e.target === $("help")) closeHelp(); });
+
+// ---------- clipboard settings ----------
+
+function setClipMode(mode) {
+  layout.clip = mode;
+  store.set("layout", layout);
+  post({ type: "clipMode", mode });
+}
+
+function openClipSettings() {
+  closeMenus();
+  const f = $("clipset-form").elements;
+  f.mode.value = layout.clip;
+  f.chars.value = clipOpts.chars;
+  f.multi.value = clipOpts.multi;
+  $("clipset").hidden = false;
+  $("clipset-close").focus();
+}
+
+function closeClipSettings() {
+  $("clipset").hidden = true;
+  focusDoc();
+}
+
+$("clipset-close").onclick = closeClipSettings;
+$("clipset").addEventListener("mousedown", (e) => { if (e.target === $("clipset")) closeClipSettings(); });
+$("clipset-form").addEventListener("submit", (e) => e.preventDefault());
+$("clipset-form").addEventListener("change", (e) => {
+  const f = $("clipset-form").elements;
+  if (e.target.name === "mode") { setClipMode(f.mode.value); return; }
+  const chars = Math.round(Number(f.chars.value));
+  if (Number.isFinite(chars) && chars >= 0) clipOpts.chars = chars;
+  f.chars.value = clipOpts.chars;
+  clipOpts.multi = f.multi.value;
+  post({ type: "clipOptions", chars: clipOpts.chars, multi: clipOpts.multi });
+});
 
 // ---------- full-text search ----------
 
@@ -1299,13 +1369,14 @@ function openMoreMenu() {
     `<div class="label">剪貼簿有 .md 或圖片路徑時</div>` +
     [["auto", "自動開啟"], ["hint", "只提示"], ["off", "不理會"]]
       .map(([mode, label]) => `<button data-clip="${mode}">${icon("copy")}<span>${label}</span>${layout.clip === mode ? `<span class="tail">${icon("check")}</span>` : ""}</button>`)
-      .join("");
+      .join("") +
+    item("clipset", "keyboard", "剪貼簿設定…");
   showMenu($("more-menu"), $("more"));
 }
 
 $("more-menu").addEventListener("click", (e) => {
   const clip = e.target.closest("button[data-clip]");
-  if (clip) { layout.clip = clip.dataset.clip; store.set("layout", layout); post({ type: "clipMode", mode: layout.clip }); closeMenus(); return; }
+  if (clip) { setClipMode(clip.dataset.clip); closeMenus(); return; }
   const b = e.target.closest("button[data-act]");
   if (!b) return;
   closeMenus();
@@ -1316,6 +1387,7 @@ $("more-menu").addEventListener("click", (e) => {
   else if (act === "reload") reloadAll();
   else if (act === "pdf") exportPdf();
   else if (act === "help") openHelp();
+  else if (act === "clipset") openClipSettings();
   else if (act === "copy") {
     copyText(currentPath());
     toast("已複製：" + currentPath());
@@ -1443,11 +1515,25 @@ $("toast").addEventListener("mouseleave", () => { if (!toastUntilInteraction) ar
 // ---------- clipboard ----------
 
 // The host reports copied markdown/image paths it can find on disk.
+// deliberate: few other words came with the path (see clipOpts.chars). A passage that merely mentions a
+// file is only offered: no jumping to it, and no raising the window over what the user is doing.
 function onClipboard(m) {
   const mode = m.force ? "auto" : layout.clip; // force: the user clicked the tray notification
   if (mode === "off") return;
-  if (!m.fromSelf) post({ type: "raise" }); // copied elsewhere: make sure the viewer is visible
+  const offerOnly = mode === "hint" || (m.deliberate === false && !m.force);
+  if (!m.fromSelf && m.deliberate !== false) post({ type: "raise" }); // copied elsewhere: make sure the viewer is visible
   const CLIP_MS = "interact";
+  if (m.files) {
+    const n = m.files.length, pick = () => openPick(m.files);
+    if (m.force && clipOpts.multi === "list") { pick(); return; }
+    if (!offerOnly && clipOpts.multi === "first") {
+      openClipFile(m.files[0]);
+      toast(`已從剪貼簿開啟：${m.files[0].rel ?? m.files[0].path}，還有 ${n - 1} 個`, { label: "選擇", run: pick }, CLIP_MS);
+      return;
+    }
+    toast(`剪貼簿裡有 ${n} 個檔案`, { label: "選擇", run: pick }, CLIP_MS);
+    return;
+  }
   if (m.matches) {
     // Only a file name / path tail was copied. Prefer the match next to the open document.
     const dir = state.current ? state.current.slice(0, state.current.lastIndexOf("/") + 1) : "";
@@ -1460,11 +1546,15 @@ function onClipboard(m) {
       return;
     }
   }
-  if (m.rel && m.rel === state.current && m.hash) { scrollToHash(m.hash, true); return; }
-  if (m.rel && m.rel === state.current) { toast("剪貼簿的檔案已經開著：" + m.rel, null, CLIP_MS); return; }
+  if (m.rel && m.rel === state.current) {
+    if (offerOnly) return; // already in front of the user
+    if (m.hash) scrollToHash(m.hash, true);
+    else toast("剪貼簿的檔案已經開著：" + m.rel, null, CLIP_MS);
+    return;
+  }
   const label = m.rel ?? m.path;
-  const open = () => (m.rel ? navigate(m.rel, m.hash ?? "") : post({ type: "resolve", text: m.path + (m.hash ?? ""), id: (pal.pendingId = "clip" + Date.now()) }));
-  if (mode === "hint") { toast("剪貼簿：" + label, { label: "開啟", run: open }, CLIP_MS); return; }
+  const open = () => openClipFile(m, false, m.hash ?? "");
+  if (offerOnly) { toast((mode === "hint" ? "剪貼簿：" : "剪貼簿裡提到：") + label, { label: "開啟", run: open }, CLIP_MS); return; }
   const from = state.current;
   open();
   // A copy made inside the viewer may just be text being read; offer a one-click way back.
@@ -1503,6 +1593,7 @@ function onKey(e) {
   else if ((e.altKey && k === "arrowright") || k === "browserforward") go(1);
   else if (k === "escape" && closeMenus()) { /* closed a menu */ }
   else if (k === "escape" && !$("help").hidden) closeHelp();
+  else if (k === "escape" && !$("clipset").hidden) closeClipSettings();
   else if (k === "escape" && !$("findbar").hidden) closeFind();
   else if (k === "escape" && layout.zen) toggleZen();
   else return;

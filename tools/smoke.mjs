@@ -38,7 +38,9 @@ async function js(expr) {
 }
 
 async function waitFor(expr, ms = 5000) {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await js(expr)) return true;
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) {
+    try { if (await js(expr)) return true; } catch { /* the page script may not have run yet */ }
+  }
   // What the page was showing instead, for intermittent failures.
   const seen = await js("JSON.stringify({ current: state.current, pending: !!state.pending, toast: $('toast').hidden ? null : $('toast').textContent })");
   throw new Error("timed out waiting for: " + expr + "  page: " + seen);
@@ -127,6 +129,42 @@ await check("heading link copies and reopens at the heading", async () => {
 await check("clipboard: bare file name opens", async () => {
   setClipboard("other.md");
   await waitFor(`state.current === ${JSON.stringify(rel("other.md"))}`, 5000);
+});
+
+const toastText = () => js("$('toast').hidden ? '' : $('toast').querySelector('.msg').textContent");
+const passage = (file) => "這次修改主要是調整清單排序的規則，原本的做法在重複項目上會多算一次，細節請參考 " + file + " 裡第三節的說明，另外也更新了測試資料。";
+
+await check("clipboard: a passage mentioning a file only offers it", async () => {
+  await open("guide.md");
+  setClipboard(passage(path.join(fixtures, "other.md")));
+  await waitFor("!$('toast').hidden && $('toast').textContent.includes('剪貼簿裡提到')", 5000);
+  expect(await js("state.current") === rel("guide.md"), "the page changed");
+  await js("$('toast').querySelector('.act').click()");
+  await waitFor(`state.current === ${JSON.stringify(rel("other.md"))}`);
+});
+
+await check("clipboard: several files are listed to pick from", async () => {
+  setClipboard(`${path.join(fixtures, "guide.md")}\n${path.join(fixtures, "evil.md")}`);
+  await waitFor("!$('toast').hidden && $('toast').textContent.includes('2 個檔案')", 5000);
+  expect(await js("state.current") === rel("other.md"), "the page changed");
+  await js("$('toast').querySelector('.act').click()");
+  const names = await js("pal.mode === 'pick' ? pal.items.map(i => i.path.split('\\\\').pop()).join(',') : 'mode ' + pal.mode");
+  expect(names === "guide.md,evil.md", "list: " + names);
+  await js("choose(pal.items[0])");
+  await waitFor(`state.current === ${JSON.stringify(rel("guide.md"))}`);
+});
+
+await check("clipboard settings change what opens by itself", async () => {
+  const before = await js("clipOpts.chars");
+  const setChars = (n) => js(`openClipSettings(); $('clipset-form').elements.chars.value = ${n}; $('clipset-form').elements.chars.dispatchEvent(new Event('change', { bubbles: true })); closeClipSettings()`);
+  await setChars(500);
+  try {
+    setClipboard(passage(path.join(fixtures, "other.md")));
+    await waitFor(`state.current === ${JSON.stringify(rel("other.md"))}`, 5000);
+  } finally {
+    await setChars(before);
+  }
+  expect(await js("clipOpts.chars") === before, "not restored");
 });
 
 await check("quick open finds a file", async () => {

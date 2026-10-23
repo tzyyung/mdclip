@@ -478,6 +478,11 @@ sealed class MainForm : Form
             case "clipMode":
                 if (Str("mode") is "auto" or "hint" or "off") { settings.Clip = Str("mode"); settings.Save(); }
                 break;
+            case "clipOptions":
+                if (msg.TryGetProperty("chars", out var c) && c.TryGetInt32(out var chars) && chars >= 0) settings.ClipChars = chars;
+                if (Str("multi") is "list" or "first") settings.ClipMulti = Str("multi");
+                settings.Save();
+                break;
             case "opened":
                 if (FromRel(Str("rel")) is { } opened && File.Exists(opened)) // not for a "not found" page
                 {
@@ -764,6 +769,9 @@ sealed class MainForm : Form
         clipboardDelay.Start();
     }
 
+    // Longer text (a whole log or document) is not looked at.
+    const int MaxClipboardText = 20_000;
+
     void ReadClipboard()
     {
         clipboardDelay.Stop();
@@ -771,15 +779,23 @@ sealed class MainForm : Form
         if (seq == lastClipboardSeq) return;
 
         string? found = null, hash = null;
-        List<string> matches = [];
+        List<string> matches = [], files = [];
+        bool deliberate = true;
         try
         {
             if (Clipboard.ContainsFileDropList())
-                found = Clipboard.GetFileDropList().Cast<string>().FirstOrDefault(f => IsListed(f) && File.Exists(f));
-            else if (Clipboard.ContainsText() && Clipboard.GetText() is { Length: <= 4000 } text)
+            {
+                var copied = Clipboard.GetFileDropList().Cast<string>().Where(f => IsListed(f) && File.Exists(f)).Take(20).ToList();
+                if (copied.Count == 1) found = copied[0];
+                else files = copied;
+            }
+            else if (Clipboard.ContainsText() && Clipboard.GetText() is { Length: <= MaxClipboardText } text)
             {
                 (var pathText, hash) = SplitFragment(text);
-                (found, matches) = FindPathIn(pathText);
+                var finder = Finder();
+                (found, matches, files, deliberate) = finder.Analyze(pathText, settings.ClipChars);
+                foreach (var dir in finder.SeenDirs) settings.RememberDir(dir);
+                if (files.Count > 0) hash = null; // a heading belongs to one file
             }
         }
         catch (ExternalException ex)
@@ -791,27 +807,33 @@ sealed class MainForm : Form
         }
         lastClipboardSeq = seq;
 
-        if (found is null && matches.Count == 0) return;
-        // force: open even in "hint" mode (the user clicked the tray notification).
+        if (found is null && matches.Count == 0 && files.Count == 0) return;
+        // force: act even in "hint" mode or on a passage (the user clicked the tray notification).
+        // deliberate: few other words were copied with the path; otherwise the page only offers it.
         object Message(bool? force) => new
         {
             type = "clipboard",
             path = found,
             rel = found is not null && IsUnder(found, root) ? ToRel(found) : null,
-            matches = found is null ? matches : null,
+            matches = found is null && matches.Count > 0 ? matches : null,
+            files = files.Count > 0 ? files.Select(f => new { path = f, rel = IsUnder(f, root) ? ToRel(f) : null }).ToList() : null,
             hash,
+            deliberate,
             fromSelf = ActiveForm == this,
             force,
         };
         if (Visible) { Post(Message(null)); return; }
 
-        // Hidden in the tray: the page is not there to decide, so follow the mode here.
-        if (settings.Clip == "off") return;
-        if (settings.Clip == "hint")
+        // Hidden in the tray: the page is not there to decide, so follow the settings here. A passage
+        // that merely mentions a file is not worth a notification.
+        if (settings.Clip == "off" || !deliberate) return;
+        if (settings.Clip == "hint" || (files.Count > 0 && settings.ClipMulti == "list"))
         {
             hintedClipboard = Message(true);
-            var name = Path.GetFileName(found ?? matches[0]);
-            tray.ShowBalloonTip(6000, "剪貼簿裡有可以開啟的檔案", $"{name}（點這裡開啟）", ToolTipIcon.None);
+            var (title, body) = files.Count > 0
+                ? ($"剪貼簿裡有 {files.Count} 個可以開啟的檔案", "點這裡選擇")
+                : ("剪貼簿裡有可以開啟的檔案", $"{Path.GetFileName(found ?? matches[0])}（點這裡開啟）");
+            tray.ShowBalloonTip(6000, title, body, ToolTipIcon.None);
             return;
         }
         PostWhenReady(Message(null));
@@ -957,6 +979,8 @@ sealed class MainForm : Form
                     lastDark = settings.LastDark,
                     systemDark = Themes.SystemIsDark(),
                     clip = settings.Clip,
+                    clipChars = settings.ClipChars,
+                    clipMulti = settings.ClipMulti,
                     startScroll = TakeStartScroll(),
                     history = HistoryItems(),
                     themes = Themes.All.Select(t => new { t.Id, t.Name, t.Dark, bg = t.Hex("bg"), accent = t.Hex("accent"), h3 = t.Hex("h3") }),

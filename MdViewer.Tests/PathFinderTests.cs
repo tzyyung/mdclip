@@ -252,6 +252,93 @@ public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
         Assert.Equal(tree.In(@"docs\setup.md"), Found(rest));
     }
 
+    // ---------- what the clipboard offers (Analyze) ----------
+
+    PathFinder.Offer Offer(string text, int maxExtra = 30) => Finder(tree.Outside).Analyze(text, maxExtra);
+
+    [Theory]
+    [InlineData("docs/setup.md")]
+    [InlineData("請看 docs/setup.md 這份")]
+    [InlineData("「docs/setup.md」")]
+    public void Copied_on_purpose(string text)
+    {
+        var offer = Offer(text);
+        Assert.Equal(tree.In(@"docs\setup.md"), offer.Path);
+        Assert.True(offer.Deliberate);
+    }
+
+    [Fact]
+    public void Path_in_a_long_passage_is_only_mentioned()
+    {
+        var offer = Offer("這次修改主要是調整清單排序的規則，原本的做法在重複項目上會多算一次，細節請參考 docs/setup.md 裡第三節的說明，另外也更新了測試資料。");
+        Assert.Equal(tree.In(@"docs\setup.md"), offer.Path);
+        Assert.False(offer.Deliberate);
+    }
+
+    [Fact]
+    public void Extra_word_limit_is_a_setting()
+    {
+        Assert.True(Offer("docs/setup.md", maxExtra: 0).Deliberate);
+        Assert.True(Offer($"\"{tree.In(@"docs\setup.md")}\"", maxExtra: 0).Deliberate); // quotes do not count
+        Assert.False(Offer("請看 docs/setup.md", maxExtra: 0).Deliberate);
+        Assert.True(Offer("請看 docs/setup.md", maxExtra: 2).Deliberate);
+    }
+
+    [Fact]
+    public void Several_files_in_text_order()
+    {
+        var offer = Offer("pics/dot.png 和 docs/setup.md");
+        Assert.Equal([tree.In(@"pics\dot.png"), tree.In(@"docs\setup.md")], offer.Files);
+        Assert.True(offer.Deliberate);
+    }
+
+    [Fact]
+    public void Several_files_one_per_line()
+    {
+        var offer = Offer($"改了這幾份：\r\n- {tree.In(@"docs\setup.md")}\r\n- archive.md\r\n- `{tree.In(@"My Docs\a b.md")}`");
+        Assert.Equal([tree.In(@"docs\setup.md"), Path.Combine(tree.Outside, "archive.md"), tree.In(@"My Docs\a b.md")], offer.Files);
+    }
+
+    [Fact]
+    public void Same_file_named_twice_is_one_file()
+    {
+        var offer = Offer($"{tree.In(@"docs\setup.md")} 也就是 docs/setup.md");
+        Assert.Empty(offer.Files);
+        Assert.Equal(tree.In(@"docs\setup.md"), offer.Path);
+    }
+
+    [Fact]
+    public void Several_files_in_a_long_passage_are_only_mentioned()
+    {
+        var offer = Offer("這次修改主要是調整清單排序的規則，原本的做法在重複項目上會多算一次，細節請參考 docs/setup.md 和 pics/dot.png 的說明。");
+        Assert.Equal(2, offer.Files.Count);
+        Assert.False(offer.Deliberate);
+    }
+
+    [Fact]
+    public void Missing_files_are_left_out_of_the_list()
+    {
+        var offer = Offer("docs/setup.md docs/nope.md pics/dot.png");
+        Assert.Equal([tree.In(@"docs\setup.md"), tree.In(@"pics\dot.png")], offer.Files);
+    }
+
+    [Fact]
+    public void Ambiguous_name_alone_still_offers_its_matches()
+    {
+        var offer = Finder().Analyze("notes.md", 30);
+        Assert.Empty(offer.Files);
+        Assert.Equal(2, offer.Matches.Count);
+    }
+
+    [Fact]
+    public void Nothing_to_offer()
+    {
+        var offer = Offer("今天開會討論 commit gate 的時間");
+        Assert.Null(offer.Path);
+        Assert.Empty(offer.Matches);
+        Assert.Empty(offer.Files);
+    }
+
     // ---------- candidates for paths with spaces ----------
 
     [Fact]

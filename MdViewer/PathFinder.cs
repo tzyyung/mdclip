@@ -60,7 +60,10 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
 
     // The file the text names (Path), or failing that the root-relative files whose name or path tail
     // it matches (Matches: one means open it, several means let the user pick).
-    public (string? Path, List<string> Matches) Find(string text)
+    public (string? Path, List<string> Matches) Find(string text) => FindWithSource(text) is var f ? (f.Path, f.Matches) : default;
+
+    // Find, plus the stretch of text that named the file (for telling a copied path from a passage).
+    (string? Path, List<string> Matches, string? Source) FindWithSource(string text)
     {
         var candidates = new[] { text }
             .Concat(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -69,47 +72,118 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
             .ToList();
         CollectDirs(candidates);
         foreach (var candidate in candidates)
-            if (Resolve(candidate) is { } path && IsListed(path) && File.Exists(path)) return (path, []);
+            if (Resolve(candidate) is { } path && IsListed(path) && File.Exists(path)) return (path, [], candidate);
 
         // Not a real path: treat it as a file name or path tail. A single match under the root wins;
         // otherwise look next to recently opened files (also outside the root), most recent first;
         // otherwise report every match under the root so the user can pick.
         foreach (var candidate in candidates)
         {
-            var tail = candidate.Trim().Trim('"', '\'', '`').Replace('\\', '/').TrimStart('.', '/');
+            var tail = Tail(candidate);
             if (tail.Length == 0 || tail.Any(char.IsWhiteSpace) || !IsListed(tail)) continue;
-            var hits = knownFiles.Where(rel => rel.Equals(tail, StringComparison.OrdinalIgnoreCase)
-                || rel.EndsWith("/" + tail, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (hits.Count == 1) return (null, hits);
-            if (FindInRecentDirs(tail) is { } recent) return (recent, []);
-            if (hits.Count > 1) return (null, hits);
+            var hits = NameMatches(tail);
+            if (hits.Count == 1) return (null, hits, candidate);
+            if (FindInRecentDirs(tail) is { } recent) return (recent, [], candidate);
+            if (hits.Count > 1) return (null, hits, candidate);
         }
-        return (null, []);
+        return (null, [], null);
     }
 
-    // For each listed extension inside a sentence, the stretches that end there and contain a space,
-    // starting at a drive letter, a UNC prefix or a word boundary, longest first: "see C:\My Docs\a.md now"
-    // yields "see C:\My Docs\a.md", "C:\My Docs\a.md", ... Only ones that exist are used.
-    public static IEnumerable<string> SpacedCandidates(string text)
+    // One file named in a text, and the stretch of text that named it.
+    public sealed record Hit(string Path, string Source);
+
+    const int MaxFiles = 20, MaxExtensions = 200;
+
+    // Every file the text names, in the order they appear, each once (at most MaxFiles): for each listed
+    // extension, the longest stretch ending there that is a real path, else a file name / path tail with
+    // one match under the root or a match in a remembered folder. Names with several matches are left out.
+    public List<Hit> FindAll(string text)
     {
+        var found = new List<Hit>();
+        int seen = 0;
         foreach (var line in text.Split('\n'))
         {
             foreach (Match ext in ExtensionEnd.Matches(line))
             {
-                var starts = new List<int>();
-                for (int i = 0; i < ext.Index; i++)
-                {
-                    if (char.IsWhiteSpace(line[i])) continue;
-                    bool afterBreak = i == 0 || char.IsWhiteSpace(line[i - 1]) || line[i - 1] is '"' or '\'' or '`' or '(' or '「' or '：';
-                    bool drive = i + 2 < line.Length && char.IsAsciiLetter(line[i]) && line[i + 1] == ':' && line[i + 2] is '\\' or '/';
-                    if (afterBreak || drive) starts.Add(i);
-                }
-                foreach (var start in starts.TakeLast(12))
-                    if (line[start..(ext.Index + ext.Length)] is var candidate && candidate.Any(char.IsWhiteSpace))
-                        yield return candidate;
+                if (++seen > MaxExtensions || found.Count == MaxFiles) return found;
+                if (FileEndingAt(line, ext.Index + ext.Length) is { } hit && !found.Any(h => h.Path.Equals(hit.Path, StringComparison.OrdinalIgnoreCase)))
+                    found.Add(hit);
             }
         }
+        return found;
     }
+
+    Hit? FileEndingAt(string line, int end)
+    {
+        var stretches = Starts(line, end).Select(start => line[start..end]).ToList();
+        foreach (var stretch in stretches)
+            if (Resolve(stretch) is { } path && IsListed(path) && File.Exists(path)) return new(path, stretch);
+        foreach (var stretch in stretches.Where(s => !s.Any(char.IsWhiteSpace)))
+        {
+            var tail = Tail(stretch);
+            if (tail.Length == 0) continue;
+            if (NameMatches(tail) is [var only]) return new(Path.GetFullPath(Path.Combine(root, only.Replace('/', '\\'))), stretch);
+            if (FindInRecentDirs(tail) is { } recent) return new(recent, stretch);
+        }
+        return null;
+    }
+
+    // What the clipboard text offers: one file (Path), a name with several matches (Matches), or several
+    // different files (Files, in text order); and whether it looks copied on purpose (Deliberate): at most
+    // maxExtra characters besides the paths, so "請看 docs/setup.md 這份" opens but a paragraph that happens
+    // to mention a file only offers it.
+    public sealed record Offer(string? Path, List<string> Matches, List<string> Files, bool Deliberate);
+
+    public Offer Analyze(string text, int maxExtra)
+    {
+        var (path, matches, source) = FindWithSource(text);
+        var all = FindAll(text);
+        if (all.Count > 1)
+            return new(null, [], all.Select(h => h.Path).ToList(), ExtraChars(text, all.Select(h => h.Source)) <= maxExtra);
+        return new(path, matches, [], ExtraChars(text, source is null ? [] : [source]) <= maxExtra);
+    }
+
+    // The characters of the text outside the given stretches, not counting spaces, quotes and brackets.
+    public static int ExtraChars(string text, IEnumerable<string> stretches)
+    {
+        foreach (var stretch in stretches.OrderByDescending(s => s.Length))
+            if (text.IndexOf(stretch, StringComparison.Ordinal) is >= 0 and var at) text = text.Remove(at, stretch.Length);
+        return text.Count(c => !char.IsWhiteSpace(c) && !"\"'`「」『』()（）<>[]".Contains(c));
+    }
+
+    // For each listed extension inside a sentence, the stretches that end there and contain a space,
+    // longest first: "see C:\My Docs\a.md now" yields "see C:\My Docs\a.md", "C:\My Docs\a.md". Only
+    // ones that exist are used.
+    public static IEnumerable<string> SpacedCandidates(string text)
+    {
+        foreach (var line in text.Split('\n'))
+            foreach (Match ext in ExtensionEnd.Matches(line))
+                foreach (var start in Starts(line, ext.Index + ext.Length))
+                    if (line[start..(ext.Index + ext.Length)] is var candidate && candidate.Any(char.IsWhiteSpace))
+                        yield return candidate;
+    }
+
+    // Where a path ending at `end` may start, farthest first (the nearest 12): a drive letter, or just
+    // after whitespace, a quote, an opening bracket or full-width punctuation.
+    static IEnumerable<int> Starts(string line, int end)
+    {
+        var starts = new List<int>();
+        for (int i = 0; i < end; i++)
+        {
+            if (char.IsWhiteSpace(line[i])) continue;
+            bool afterBreak = i == 0 || char.IsWhiteSpace(line[i - 1]) || line[i - 1] is '"' or '\'' or '`' or '(' || IsFullWidthMark(line[i - 1]);
+            bool drive = i + 2 < line.Length && char.IsAsciiLetter(line[i]) && line[i + 1] == ':' && line[i + 2] is '\\' or '/';
+            if (afterBreak || drive) starts.Add(i);
+        }
+        return starts.TakeLast(12);
+    }
+
+    static bool IsFullWidthMark(char c) => c is >= '\u3000' and <= '\u303F' or >= '\uFF00' and <= '\uFFEF';
+
+    static string Tail(string candidate) => candidate.Trim().Trim('"', '\'', '`').Replace('\\', '/').TrimStart('.', '/');
+
+    List<string> NameMatches(string tail) => knownFiles.Where(rel => rel.Equals(tail, StringComparison.OrdinalIgnoreCase)
+        || rel.EndsWith("/" + tail, StringComparison.OrdinalIgnoreCase)).ToList();
 
     // A token can have words glued to its front in Chinese text ("路徑：E:\docs\a.md", "請看E:\docs\a.md",
     // "「docs/a.md」"): also try it from each drive letter and from after each full-width punctuation mark.
@@ -117,7 +191,7 @@ sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IReadOnly
     {
         for (int i = 1; i < token.Length; i++)
         {
-            bool afterMark = token[i - 1] is >= '　' and <= '〿' or >= '＀' and <= '￯';
+            bool afterMark = IsFullWidthMark(token[i - 1]);
             bool drive = i + 2 < token.Length && char.IsAsciiLetter(token[i]) && token[i + 1] == ':' && token[i + 2] is '\\' or '/';
             if (afterMark || drive) yield return token[i..];
         }

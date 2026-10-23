@@ -99,6 +99,29 @@
     <div class="help-body" id="help-body"></div>
   </div>
 </div>
+<div class="help" id="clipset" role="dialog" aria-label="剪貼簿設定" hidden>
+  <div class="help-box clipset-box">
+    <div class="help-head"><h2>剪貼簿設定</h2><button class="icon sm" id="clipset-close" title="關閉 (Esc)">✕</button></div>
+    <form class="clipset-body" id="clipset-form">
+      <fieldset>
+        <legend>複製到 .md 或圖片的路徑時</legend>
+        <label><input type="radio" name="mode" value="auto">自動開啟</label>
+        <label><input type="radio" name="mode" value="hint">只提示</label>
+        <label><input type="radio" name="mode" value="off">不理會</label>
+      </fieldset>
+      <fieldset>
+        <legend>路徑夾在其他文字裡時</legend>
+        <label>路徑以外最多<input type="number" name="chars" min="0" step="1">個字才自動開啟</label>
+        <p class="note">超過只提示，不換頁。0 表示只有複製純路徑才自動開啟；空白、引號、括號不算。</p>
+      </fieldset>
+      <fieldset>
+        <legend>一次複製到多個檔案時</legend>
+        <label><input type="radio" name="multi" value="list">列出來讓我選</label>
+        <label><input type="radio" name="multi" value="first">開第一個，並提示還有幾個</label>
+      </fieldset>
+    </form>
+  </div>
+</div>
 <div class="drop" id="drop" hidden><div class="drop-box">放開以開啟檔案或資料夾</div></div>
 
 <script>/*CONFIG*/</script>
