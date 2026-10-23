@@ -20,6 +20,9 @@ public static class TextFiles
 
     public static string ReadText(string path) => Decode(ReadBytes(path));
 
+    // The lines of a text, whichever line ends it uses.
+    public static string[] Lines(string text) => text.Split('\n').Select(l => l.TrimEnd('\r')).ToArray();
+
     // UTF-8 (with or without BOM) or UTF-16 with BOM; anything else that is not valid UTF-8 was saved by an
     // older editor in the language's legacy code page (Big5 for Traditional Chinese), or in `legacy`.
     public static string Decode(byte[] bytes, Encoding? legacy = null)

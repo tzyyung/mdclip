@@ -7,7 +7,11 @@ namespace MdViewer;
 // Colors follow each project's published palette (GitHub Primer, draculatheme.com, nordtheme.com, ...).
 public sealed record Theme(string Id, string Name, bool Dark, string Vars)
 {
-    public string Hex(string name) => Regex.Match(Vars, $@"--{name}:\s*(#[0-9a-fA-F]{{6}})").Groups[1].Value;
+    // Each colour variable, read from Vars once.
+    readonly Dictionary<string, string> colors = Regex.Matches(Vars, @"--([\w-]+):\s*(#[0-9a-fA-F]{6})")
+        .ToDictionary(m => m.Groups[1].Value, m => m.Groups[2].Value);
+
+    public string Hex(string name) => colors.GetValueOrDefault(name, "");
 
     public Color Color(string name) => ColorTranslator.FromHtml(Hex(name));
 }

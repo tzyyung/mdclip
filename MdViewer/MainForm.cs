@@ -1,18 +1,12 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Pipes;
-using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using Markdig;
-using Markdig.Extensions.AutoIdentifiers;
-using Markdig.Extensions.Yaml;
-using Markdig.Renderers;
-using Markdig.Syntax;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
@@ -29,18 +23,8 @@ sealed class MainForm : Form
 {
     const string Host = "md.view";
     const string Origin = $"https://{Host}/";
-    static readonly HashSet<string> SkipDirs = new(StringComparer.OrdinalIgnoreCase)
-        { "node_modules", "bin", "obj", "target", "dist", "build", "__pycache__", "venv", "packages" };
-
-    // Folders the tree leaves out, and whose changes are therefore ignored: hidden ones (.git, .vs, ...)
-    // and build or package output.
-    static bool IsSkippedDir(string name) => name.StartsWith('.') || SkipDirs.Contains(name);
-    static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
-        .UseAutoIdentifiers(AutoIdentifierOptions.GitHub) // keeps CJK heading ids
-        .UseAdvancedExtensions()
-        .UseYamlFrontMatter() // parsed out of the body; shown as a collapsible "文件資訊" box instead
-        .Build();
-    // Embedded files (the web UI and its libraries, the icon), read once (declared first: other static fields, like the icon, use it); the text ones also decoded once.
+    // Embedded files (the web UI and its libraries, the icon), read once; the text ones also decoded once.
+    // Declared first: other static fields, like the icon, use them.
     static readonly ConcurrentDictionary<string, byte[]?> resources = new();
     static readonly ConcurrentDictionary<string, string> resourceTexts = new();
 
@@ -57,8 +41,8 @@ sealed class MainForm : Form
     IntPtr returnFocusTo; // the window the user was typing in when a clipboard copy brought ours back
     int startScroll; // reading position for the document the next page load opens (a tray "最近讀過" pick)
     string exportHtml = ""; // the page being turned into a PDF, served at __export
-    // Text of each searched file, reused while its modification time is unchanged.
-    readonly ConcurrentDictionary<string, (DateTime Written, string[] Lines)> searchCache = new(StringComparer.OrdinalIgnoreCase);
+    readonly DocumentSearch search = new();
+    readonly DocumentPages pages;
     readonly FileSystemWatcher watcher = new()
     {
         IncludeSubdirectories = true,
@@ -88,6 +72,7 @@ sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         theme = Themes.Resolve(settings.Theme);
         BackColor = theme.Color("bg");
+        pages = new(Themes.Css + Resource("common.css") + Resource("doc.css"), () => theme.Id);
 
         watcher.Changed += OnFsEvent;
         // Too many changes at once for Windows to report them all: some were lost, so refresh everything.
@@ -212,7 +197,7 @@ sealed class MainForm : Form
         web = null;
         appReady = false;
         afterReady.Clear();
-        ClearSearchCache();
+        search.Clear();
         Controls.Remove(view);
         view.Dispose();
         // Hidden in the tray for possibly hours: give back what the page used.
@@ -431,8 +416,8 @@ sealed class MainForm : Form
         var r = root;
         return Task.Run(() =>
         {
-            var tree = BuildChildren(new DirectoryInfo(r), r) ?? [];
-            if (r == root) knownFiles = Flatten(tree).ToList();
+            var tree = DocumentTree.Build(r);
+            if (r == root) knownFiles = DocumentTree.Files(tree).ToList();
             return tree;
         });
     }
@@ -656,76 +641,15 @@ sealed class MainForm : Form
 
     // ---------- full-text search ----------
 
-    const int MaxHits = 300;
-
-    // Case-insensitive search through every Markdown file of the last tree scan, off the UI thread.
-    // Each hit carries its occurrence number in the file so the page can jump to that same match.
+    // Through every Markdown file of the last tree scan, off the UI thread.
     void Search(string query, string id)
     {
         var (files, dir) = (knownFiles, root);
         Task.Run(() =>
         {
-            var hits = new List<object>();
-            int total = 0, fileCount = 0;
-            if (query.Trim().Length > 0)
-            {
-                foreach (var rel in files.Where(IsMarkdown))
-                {
-                    string[] lines;
-                    try { lines = ReadForSearch(Paths.FromRel(dir, rel)); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
-                    int nth = 0, fileHits = 0;
-                    bool inDiagram = false;
-                    for (int i = 0; i < lines.Length; i++)
-                    {
-                        // Text inside a diagram is drawn as SVG, which the page's find does not count;
-                        // such hits jump to the next match after the diagram.
-                        var fence = lines[i].TrimStart();
-                        if (fence.StartsWith("```mermaid") || fence.StartsWith("~~~mermaid")) inDiagram = true;
-                        else if (inDiagram && (fence.StartsWith("```") || fence.StartsWith("~~~"))) inDiagram = false;
-                        for (int at = lines[i].IndexOf(query, StringComparison.OrdinalIgnoreCase); at >= 0;
-                             at = lines[i].IndexOf(query, at + query.Length, StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (fileHits++ == 0) fileCount++;
-                            if (total++ < MaxHits) hits.Add(new { rel, line = i + 1, nth, snippet = Snippet(lines[i], at, query.Length) });
-                            if (!inDiagram) nth++;
-                        }
-                    }
-                }
-            }
-            if (IsHandleCreated) BeginInvoke(() => Post(new { type = "searchResults", id, hits, total, files = fileCount }));
+            var result = search.Run(dir, files, query);
+            if (IsHandleCreated) BeginInvoke(() => Post(new { type = "searchResults", id, hits = result.Hits, total = result.Total, files = result.Files }));
         });
-    }
-
-    // Kept to about 64 MB of text: past that the cache starts over rather than growing with a huge folder.
-    const long MaxSearchCacheChars = 32_000_000;
-    long searchCacheChars;
-
-    string[] ReadForSearch(string path)
-    {
-        var written = File.GetLastWriteTimeUtc(path);
-        if (searchCache.TryGetValue(path, out var cached) && cached.Written == written) return cached.Lines;
-        var text = TextFiles.ReadText(path);
-        if (Interlocked.Add(ref searchCacheChars, text.Length) > MaxSearchCacheChars) ClearSearchCache();
-        return (searchCache[path] = (written, text.Split('\n').Select(l => l.TrimEnd('\r')).ToArray())).Lines;
-    }
-
-    void ClearSearchCache()
-    {
-        searchCache.Clear();
-        Interlocked.Exchange(ref searchCacheChars, 0);
-    }
-
-    // The hit with some text on each side, split so the page can mark the match.
-    static object Snippet(string line, int at, int length)
-    {
-        int start = Math.Max(0, at - 30), end = Math.Min(line.Length, at + length + 90);
-        return new
-        {
-            before = (start > 0 ? "…" : "") + line[start..at].TrimStart(),
-            match = line.Substring(at, length),
-            after = line[(at + length)..end] + (end < line.Length ? "…" : ""),
-        };
     }
 
     // ---------- system theme, remembered folders ----------
@@ -952,11 +876,8 @@ sealed class MainForm : Form
     void OnFsEvent(object sender, FileSystemEventArgs e)
     {
         var structural = e.ChangeType != WatcherChangeTypes.Changed;
-        var md = IsMarkdown(e.FullPath);
-        if (!IsListed(e.FullPath) && !(structural && !Path.HasExtension(e.FullPath))) return;
-        // A git checkout or package install changes thousands of files in folders the tree leaves out.
-        if (ToRel(e.FullPath).Split('/').SkipLast(1).Any(IsSkippedDir)) return;
-        BeginInvoke(() => QueueRefresh(structural, md && !structural ? e.FullPath : null));
+        if (!DocumentTree.Concerns(root, e.FullPath, structural)) return;
+        BeginInvoke(() => QueueRefresh(structural, IsMarkdown(e.FullPath) && !structural ? e.FullPath : null));
     }
 
     // File changes come in bursts: the tree and the open document refresh once they pause.
@@ -980,7 +901,7 @@ sealed class MainForm : Form
             {
                 e.Response = AppResource(rel["__app/".Length..]) is var (bytes, type)
                     ? Respond(env, bytes, type)
-                    : Html(env, ErrorPage("找不到", rel), 404);
+                    : Html(env, pages.Error("找不到", rel), 404);
                 return;
             }
             if (rel == "__export")
@@ -1004,24 +925,25 @@ sealed class MainForm : Form
             var path = FromRel(rel);
             if (path is null || !SafePath.FileExists(path))
             {
-                e.Response = Html(env, ErrorPage("找不到檔案", rel), 404);
+                e.Response = Html(env, pages.Error("找不到檔案", rel), 404);
                 return;
             }
-            if (IsImage(path) && new Uri(e.Request.Uri).Query.Contains("view"))
+            var uri = new Uri(e.Request.Uri);
+            if (IsImage(path) && uri.Query.Contains("view"))
             {
-                e.Response = Html(env, ImagePage(rel));
+                e.Response = Html(env, pages.Image(uri.AbsolutePath, Path.GetFileName(path)));
                 return;
             }
             // Pictures, PDFs and HTML files as they are, under the same no-scripts policy as documents
             // (an .html or .svg file could otherwise run script in the viewer); anything else as text.
-            e.Response = IsMarkdown(path) ? Html(env, RenderMarkdown(path))
-                : MimeFor(path) is { } mime && (mime.StartsWith("image/") || mime.StartsWith("text/html") || mime == "application/pdf")
-                    ? Respond(env, TextFiles.ReadBytes(path), mime, policy: DocumentPolicy)
-                : Html(env, RenderPlain(path));
+            e.Response = IsMarkdown(path) ? Html(env, pages.Document(path))
+                : ContentType(path) is { } mime && (mime.StartsWith("image/") || mime == HtmlType || mime == "application/pdf")
+                    ? Respond(env, TextFiles.ReadBytes(path), mime, policy: DocumentPages.DocumentPolicy)
+                : Html(env, pages.Plain(path));
         }
         catch (IOException ex)
         {
-            e.Response = Html(env, ErrorPage("讀取失敗", ex.Message), 500);
+            e.Response = Html(env, pages.Error("讀取失敗", ex.Message), 500);
         }
     }
 
@@ -1030,7 +952,7 @@ sealed class MainForm : Form
             $"Content-Type: {type}\nCache-Control: no-store" + (policy is null ? "" : $"\nContent-Security-Policy: {policy}"));
 
     static CoreWebView2WebResourceResponse Html(CoreWebView2Environment env, string html, int status = 200) =>
-        Respond(env, Encoding.UTF8.GetBytes(html), "text/html; charset=utf-8", status);
+        Respond(env, Encoding.UTF8.GetBytes(html), HtmlType, status);
 
     (byte[] Bytes, string Type)? AppResource(string name)
     {
@@ -1066,9 +988,9 @@ sealed class MainForm : Form
                     .Replace("__THEME__", theme.Id)
                     .Replace("/*THEMES*/", Themes.Css)
                     .Replace("/*CONFIG*/", $"window.MD = {config};");
-                return (Encoding.UTF8.GetBytes(html), "text/html; charset=utf-8");
+                return (Encoding.UTF8.GetBytes(html), HtmlType);
             default: // app.css, app.js, the bundled libraries, katex/fonts/*.woff2, ...
-                return ResourceBytes(name) is { } bytes ? (bytes, MimeFor(name) ?? "application/octet-stream") : null;
+                return ResourceBytes(name) is { } bytes ? (bytes, ContentType(name) ?? "application/octet-stream") : null;
         }
     }
 
@@ -1084,175 +1006,11 @@ sealed class MainForm : Form
     static string Resource(string name) =>
         resourceTexts.GetOrAdd(name, static n => Encoding.UTF8.GetString(ResourceBytes(n) ?? throw new FileNotFoundException(n)));
 
-    sealed record TreeItem(string Name, string? Path, List<TreeItem>? Children);
-
-    static IEnumerable<string> Flatten(List<TreeItem> items) =>
-        items.SelectMany(it => it.Children is { } children ? Flatten(children) : [it.Path!]);
-
-    // Folders first, then markdown and image files; folders with none of those anywhere below are dropped.
-    static List<TreeItem>? BuildChildren(DirectoryInfo dir, string root)
-    {
-        List<DirectoryInfo> dirs;
-        List<FileInfo> files;
-        try
-        {
-            dirs = dir.EnumerateDirectories().OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase).ToList();
-            files = dir.EnumerateFiles().Where(f => IsListed(f.Name)).OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
-        {
-            return null;
-        }
-
-        var items = new List<TreeItem>();
-        foreach (var d in dirs)
-        {
-            if (IsSkippedDir(d.Name) || d.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
-            if (BuildChildren(d, root) is { Count: > 0 } children) items.Add(new(d.Name, null, children));
-        }
-        foreach (var f in files)
-            items.Add(new(f.Name, Paths.ToRel(root, f.FullName), null));
-        return items;
-    }
-
-    // ---------- rendering ----------
-
+    // The reading position a tray "最近讀過" pick asked for, handed to the page that loads next, once.
     int TakeStartScroll()
     {
         var y = startScroll;
         startScroll = 0;
         return y;
     }
-
-    string RenderMarkdown(string path)
-    {
-        var doc = Markdown.Parse(TextFiles.ReadText(path), Pipeline);
-        using var writer = new StringWriter();
-        var renderer = new HtmlRenderer(writer);
-        Pipeline.Setup(renderer);
-        renderer.Render(doc);
-        writer.Flush();
-        var front = doc.Descendants<YamlFrontMatterBlock>().FirstOrDefault();
-        return Page(Path.GetFileName(path), (front is null ? "" : FrontMatterHtml(front)) + writer);
-    }
-
-    // The YAML header as a collapsed box: name and description stay visible in the summary line,
-    // every field is listed when opened. Nested keys show as parent.child, lists joined with commas,
-    // block scalars (| and >) joined into one value.
-    static string FrontMatterHtml(YamlFrontMatterBlock block)
-    {
-        var rows = new List<(string Key, string Value)>();
-        string parent = "";
-        int blockIndent = -1; // inside a | or > value: lines indented deeper than this belong to it
-        foreach (var raw in block.Lines.ToString().Split('\n'))
-        {
-            var line = raw.TrimEnd('\r');
-            var text = line.Trim();
-            if (text is "" or "---" or "...") continue;
-            var indent = line.Length - line.TrimStart().Length;
-            if (blockIndent >= 0 && indent > blockIndent && rows.Count > 0)
-            {
-                rows[^1] = (rows[^1].Key, (rows[^1].Value + " " + text).Trim());
-                continue;
-            }
-            blockIndent = -1;
-            if (text.StartsWith("- ") && rows.Count > 0)
-            {
-                var item = text[2..].Trim().Trim('"', '\'');
-                rows[^1] = (rows[^1].Key, rows[^1].Value.Length > 0 ? rows[^1].Value + ", " + item : item);
-                continue;
-            }
-            var colon = text.IndexOf(": ") is >= 0 and var c ? c : text.EndsWith(':') ? text.Length - 1 : -1;
-            if (colon <= 0)
-            {
-                if (rows.Count > 0) rows[^1] = (rows[^1].Key, (rows[^1].Value + " " + text).Trim());
-                continue;
-            }
-            var key = text[..colon].Trim();
-            var value = text[(colon + 1)..].Trim();
-            if (value is "|" or "|-" or ">" or ">-" or "|+" or ">+") { value = ""; blockIndent = indent; }
-            value = value.Trim('"', '\'');
-            if (indent == 0) parent = value.Length == 0 && blockIndent < 0 ? key : "";
-            rows.Add((indent > 0 && parent.Length > 0 ? $"{parent}.{key}" : key, value));
-        }
-        var shown = rows.Where(r => r.Value.Length > 0 || !rows.Any(o => o.Key.StartsWith(r.Key + "."))).ToList();
-        if (shown.Count == 0) return "";
-
-        string Find(params string[] keys) => shown.FirstOrDefault(r => keys.Contains(r.Key, StringComparer.OrdinalIgnoreCase)).Value ?? "";
-        var name = Find("name", "title");
-        var description = Find("description", "summary");
-        Func<string, string> enc = s => WebUtility.HtmlEncode(s);
-        var summary = new StringBuilder("<span class=\"fm-label\">文件資訊</span>");
-        if (name.Length > 0) summary.Append($"<span class=\"fm-name\">{enc(name)}</span>");
-        if (description.Length > 0) summary.Append($"<span class=\"fm-desc\">{enc(description)}</span>");
-        var items = string.Concat(shown.Select(r => $"<dt>{enc(r.Key)}</dt><dd>{enc(r.Value)}</dd>"));
-        return $"<details class=\"frontmatter\"><summary>{summary}</summary><dl>{items}</dl></details>";
-    }
-
-    string RenderPlain(string path) =>
-        Page(Path.GetFileName(path), $"<h1>{WebUtility.HtmlEncode(Path.GetFileName(path))}</h1><pre class=\"plain\"><code>{WebUtility.HtmlEncode(TextFiles.ReadText(path))}</code></pre>");
-
-    // Standalone image viewer (wheel zoom, drag pan) shown when an image file is opened from the tree.
-    string ImagePage(string rel)
-    {
-        var url = "/" + string.Join('/', rel.Split('/').Select(Uri.EscapeDataString));
-        var label = JsonSerializer.Serialize(Path.GetFileName(rel));
-        return PageHead(Path.GetFileName(rel), ImagePolicy) + $$"""
-            <link rel="stylesheet" href="/__app/zoom.css"></head>
-            <body class="image-page"><div class="zoom-stage" id="stage"><img id="img" src="{{url}}" alt=""></div>
-            <script src="/__app/zoom.js"></script>
-            <script>
-              const viewer = mdZoom(document.getElementById("stage"), document.getElementById("img"), { label: {{label}} });
-              document.addEventListener("keydown", (e) => { if (viewer.key(e)) { e.preventDefault(); e.stopImmediatePropagation(); } });
-            </script>
-            </body></html>
-            """;
-    }
-
-    string ErrorPage(string title, string detail) =>
-        Page(title, $"<h1>{WebUtility.HtmlEncode(title)}</h1><p><code>{WebUtility.HtmlEncode(detail)}</code></p>");
-
-    // Documents may contain raw HTML. They share an origin with the app UI, so nothing in them may run:
-    // no scripts (incl. inline handlers and javascript: links), frames, forms or fetches. Images may be remote.
-    // The app's own script reaches into the page from the parent frame and is not affected.
-    const string DocumentPolicy =
-        "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; " +
-        "media-src * data: blob:; font-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; " +
-        "form-action 'none'; base-uri 'none'";
-
-    // The image viewer page only runs the app's zoom.js plus its own inline setup.
-    const string ImagePolicy =
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
-        "connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
-
-    // Pages past this size (HTML characters) are marked "big": doc.css then lets the browser skip laying
-    // out what is off screen, which is most of the time spent opening a document of several MB.
-    const int BigPage = 500_000;
-
-    string Page(string title, string body) =>
-        PageHead(title, DocumentPolicy) + $"</head><body{(body.Length > BigPage ? " class=\"big\"" : "")}><main>{body}</main></body></html>";
-
-    // The start of every page we make, up to the open <head>: theme, security policy, title, styles.
-    string PageHead(string title, string policy) => $$"""
-        <!doctype html>
-        <html data-theme="{{theme.Id}}"><head><meta charset="utf-8">
-        <meta http-equiv="Content-Security-Policy" content="{{policy}}">
-        <title>{{WebUtility.HtmlEncode(title)}}</title>
-        <style>{{PageStyle.Value}}</style>
-        """;
-
-    // Every theme's variables, the styles shared with the app page and the document stylesheet: the same
-    // for every page, so built once.
-    static readonly Lazy<string> PageStyle = new(() => Themes.Css + Resource("common.css") + Resource("doc.css"));
-
-    // The one table of content types: for files under the root and for the app's own resources.
-    static readonly Dictionary<string, string> MimeTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        [".png"] = "image/png", [".jpg"] = "image/jpeg", [".jpeg"] = "image/jpeg", [".gif"] = "image/gif",
-        [".svg"] = "image/svg+xml", [".webp"] = "image/webp", [".bmp"] = "image/bmp", [".ico"] = "image/x-icon",
-        [".pdf"] = "application/pdf", [".html"] = "text/html; charset=utf-8", [".htm"] = "text/html; charset=utf-8",
-        [".js"] = "text/javascript; charset=utf-8", [".css"] = "text/css; charset=utf-8", [".woff2"] = "font/woff2",
-    };
-
-    static string? MimeFor(string path) => MimeTypes.GetValueOrDefault(Path.GetExtension(path));
 }
