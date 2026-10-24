@@ -208,20 +208,25 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
     }
 
     // Where a path ending at `end` may start, farthest first (the nearest 12): a drive letter, or just
-    // after whitespace, a quote, an opening bracket or full-width punctuation.
+    // after whitespace, a quote, an opening bracket, a glued colon or full-width punctuation.
     static IEnumerable<int> Starts(string line, int end)
     {
         var starts = new List<int>();
         for (int i = 0; i < end; i++)
         {
             if (char.IsWhiteSpace(line[i])) continue;
-            bool afterBreak = i == 0 || char.IsWhiteSpace(line[i - 1]) || line[i - 1] is '"' or '\'' or '`' or '(' || IsFullWidthMark(line[i - 1]);
+            bool afterBreak = i == 0 || char.IsWhiteSpace(line[i - 1]) || line[i - 1] is '"' or '\'' or '`' or '(' || IsGluedAt(line, i);
             if (afterBreak || IsDriveAt(line, i)) starts.Add(i);
         }
         return starts.TakeLast(12);
     }
 
     static bool IsFullWidthMark(char c) => c is >= '\u3000' and <= '\u303F' or >= '\uFF00' and <= '\uFFEF';
+
+    // A path may start at i right after a mark glued to its front: full-width punctuation ("\u8DEF\u5F91\uFF1Adocs/a.md"),
+    // or a colon that is not part of the path itself (":docs/a.md", "\u898B:docs/a.md"; not "E:\" or "file://").
+    static bool IsGluedAt(string s, int i) =>
+        i > 0 && (IsFullWidthMark(s[i - 1]) || s[i - 1] == ':' && s[i] is not ('\\' or '/'));
 
     // "E:\" or "E:/" starts at i.
     static bool IsDriveAt(string s, int i) => i + 2 < s.Length && char.IsAsciiLetter(s[i]) && s[i + 1] == ':' && s[i + 2] is '\\' or '/';
@@ -241,12 +246,12 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
     }
 
     // A token can have words glued to its front in Chinese text ("路徑：E:\docs\a.md", "請看E:\docs\a.md",
-    // "「docs/a.md」"): also try it from each drive letter and from after each full-width punctuation mark.
+    // "「docs/a.md」", "見:docs/a.md"): also try it from each drive letter and from after each glued mark.
     static IEnumerable<string> TokenStarts(string token)
     {
         for (int i = 1; i < token.Length; i++)
         {
-            if (IsFullWidthMark(token[i - 1]) || IsDriveAt(token, i)) yield return token[i..];
+            if (IsGluedAt(token, i) || IsDriveAt(token, i)) yield return token[i..];
         }
     }
 

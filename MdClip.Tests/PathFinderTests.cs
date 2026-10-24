@@ -138,6 +138,15 @@ public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
         Assert.Equal(shot, Found("(docs/shots/流程圖-第1版.png):", Path.Combine(tree.Outside, @"proj\docs")));
     }
 
+    [Theory]
+    [InlineData(":docs/shots/對照圖-v2.png")]
+    [InlineData("見：docs/shots/對照圖-v2.png")]
+    public void Path_tail_glued_to_a_colon(string text)
+    {
+        var shot = tree.WriteOutside(@"proj\docs\shots\對照圖-v2.png");
+        Assert.Equal(shot, Found(text, Path.Combine(tree.Outside, @"proj\docs")));
+    }
+
     [Fact]
     public void File_name_found_in_a_folder_named_in_the_same_text() =>
         Assert.Equal(Path.Combine(tree.Outside, "archive.md"), Found(tree.Outside + "\narchive.md"));
