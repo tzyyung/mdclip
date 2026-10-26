@@ -95,8 +95,8 @@ const pressToast = () => js("$('toast').querySelector('.act').click()");
 
 // Changes the clipboard settings through their panel, as a user would.
 const setClipOptions = (opts) => js(`(() => {
-  openClipSettings();
-  const f = $('clipset-form').elements, o = ${JSON.stringify(opts)};
+  openSettings();
+  const f = $('settings-form').elements, o = ${JSON.stringify(opts)};
   for (const k in o) f[k].value = o[k];
   f.max.dispatchEvent(new Event('change', { bubbles: true }));
   closeDialog();

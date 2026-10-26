@@ -16,8 +16,12 @@ Windows 上的 Markdown 閱讀器：雙擊 `.md` 就打開，左邊檔案樹、�
 1. 編譯（見下一節），得到 `app\MdClip.exe`。
 2. 執行一次 `.\install.ps1`：之後雙擊 `.md`、`.markdown` 都會用 MdClip 打開，開始功能表也會有捷徑。
    不需要系統管理員權限，只影響目前的使用者。
-   - 如果 Windows 還是用別的程式開，表示之前選過「一律使用這個應用程式」：
-     在 `.md` 上按右鍵 → 開啟檔案 → 選擇其他應用程式 → MdClip → 一律使用。
+   - 圖片（.png、.jpg 等）原本的預設程式不會被改掉，只是可以選 MdClip 開。
+   - 「更多 → 設定」列出每種類型現在是不是用 MdClip 開；按「改用」就直接改成 MdClip，包括之前在 Windows
+     選過「一律使用」別的程式的類型（例如 .png 原本用「相片」）。雙擊圖片會在 MdClip 的圖片視窗打開。
+     這一步寫的是 Windows 自己記錄預設程式的地方（UserChoice 和它的檢查碼，見 `MdClip.Core/UserChoice.cs`）。
+     那個檢查碼的算法不是微軟公開的 API，日後 Windows 更新若改了算法，Windows 會把它改回原本的程式，再按一次也沒用。
+   - 這些也能在「更多 → 設定」直接打勾開關，不必執行 `install.ps1`。
    - 移除：`.\install.ps1 -Uninstall`
 
 `app\MdClip.exe` 需要 [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)。
@@ -70,7 +74,7 @@ MdClip 正在執行時，`publish.ps1` 會先請它正常結束（`MdClip.exe --
 - 複製圖片的路徑則是在圖片視窗（或停靠的面板）預覽，文件不換頁：← → 看同一資料夾的其他圖片
   （一次複製多張就看那幾張），Esc 關閉。
 - 路徑夾在一大段文字裡（路徑以外超過 30 個字）只提示、不換頁，也不會把視窗叫到前面；
-  一次複製到多個檔案會列出來讓你選，或改成「開第一個，並提示還有幾個」。都在「更多 → 剪貼簿設定」調整。
+  一次複製到多個檔案會列出來讓你選，或改成「開第一個，並提示還有幾個」。都在「更多 → 設定」調整。
 - 按 ✕ 會縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」。
 - 系統匣選單：最近讀過的檔案、剪貼簿模式、開機時在背景啟動。
 
@@ -113,6 +117,7 @@ MdClip 正在執行時，`publish.ps1` 會先請它正常結束（`MdClip.exe --
 | `MdClip/Program.cs` | 進入點、只允許一個程式（第二次開啟會把路徑交給已開的視窗）、`--tray` / `--exit` |
 | `MdClip/MainForm.cs` | 視窗、系統匣、剪貼簿監控、提供網頁內容給 WebView2 |
 | `MdClip/Native.cs` | 程式用到的 Windows API，集中一處 |
+| `MdClip/FileTypes.cs` | 哪些檔案類型用 MdClip 開（設定頁的勾選、「改用」和 `install.ps1` 共用） |
 | `MdClip/PictureWindow.cs` | 圖片視窗（拖到主視窗上會停靠成面板） |
 | `MdClip/web/` | 介面本體（HTML / CSS / JS），以及打包進 exe 的 highlight.js、Mermaid、KaTeX；`common.css` 是介面和文件頁共用的字型、顏色、捲軸。快捷鍵都定義在 `app.js` 的 `KEYS` 表，說明面板、選單和按鈕提示都從這裡產生 |
 | `MdClip.Core/` | 不需要視窗的部分，程式和測試共用的函式庫： |

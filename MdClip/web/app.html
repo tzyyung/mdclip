@@ -103,10 +103,10 @@
     <div class="help-body" id="help-body"></div>
   </div>
 </div>
-<div class="help" id="clipset" role="dialog" aria-label="剪貼簿設定" hidden>
-  <div class="help-box clipset-box">
-    <div class="help-head"><h2>剪貼簿設定</h2><button class="icon sm" data-key="close">✕</button></div>
-    <form class="clipset-body" id="clipset-form">
+<div class="help" id="settings" role="dialog" aria-label="設定" hidden>
+  <div class="help-box settings-box">
+    <div class="help-head"><h2>設定</h2><button class="icon sm" data-key="close">✕</button></div>
+    <form class="settings-body" id="settings-form">
       <fieldset>
         <legend>複製到 .md 或圖片的路徑時</legend>
         <span id="clip-modes"></span>
@@ -121,6 +121,13 @@
         <span id="clip-multi"></span>
         <label>最多列出<input type="number" name="max" step="1">個</label>
         <p class="note">「開第一個」找到第一個就停，按「列出」時才找其他的。</p>
+      </fieldset>
+      <fieldset>
+        <legend>用 MdClip 開啟檔案</legend>
+        <label><input type="checkbox" name="documents">雙擊 .md、.markdown 用 MdClip 開啟</label>
+        <label><input type="checkbox" name="pictures">圖片（.png、.jpg 等）可以選 MdClip 開啟</label>
+        <div class="file-types" id="file-types"></div>
+        <p class="note">按「改用」就改成雙擊用 MdClip 開，包括你之前在 Windows 選過別的程式的類型。</p>
       </fieldset>
     </form>
   </div>

@@ -341,14 +341,22 @@ body { --tabs-h: 36px; }
 .help-body dd { margin: 0; color: var(--fg); line-height: 1.45; }
 
 /* ---------- clipboard settings ---------- */
-.clipset-box { width: min(440px, 100%); }
-.clipset-body { overflow: auto; padding: 4px 18px 20px; }
-.clipset-body fieldset { display: grid; gap: 7px; margin: 14px 0 0; padding: 6px 0 0; border: 0; }
-.clipset-body legend { padding: 0; font-size: 13px; font-weight: 600; color: var(--accent); }
-.clipset-body label { display: flex; align-items: center; gap: 8px; line-height: 1.5; cursor: pointer; }
-.clipset-body input[type="radio"] { margin: 0; accent-color: var(--accent); }
-.clipset-body input[type="number"] {
+.settings-box { width: min(440px, 100%); }
+.settings-body { overflow: auto; padding: 4px 18px 20px; }
+.settings-body fieldset { display: grid; gap: 7px; margin: 14px 0 0; padding: 6px 0 0; border: 0; }
+.settings-body legend { padding: 0; font-size: 13px; font-weight: 600; color: var(--accent); }
+.settings-body label { display: flex; align-items: center; gap: 8px; line-height: 1.5; cursor: pointer; }
+.settings-body input[type="radio"], .settings-body input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
+.settings-body .file-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-size: 13px; }
+.settings-body .file-type {
+  display: flex; justify-content: space-between; align-items: center; padding: 3px 9px;
+  border: 1px solid var(--border); border-radius: 6px; color: var(--muted);
+}
+.settings-body .file-type.on { color: var(--fg); }
+.settings-body .file-type .ok { color: var(--accent); }
+.settings-body button.link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
+.settings-body input[type="number"] {
   width: 64px; padding: 3px 6px; font: inherit; text-align: right; color: var(--fg);
   background: var(--chrome); border: 1px solid var(--line); border-radius: 6px;
 }
-.clipset-body .note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.settings-body .note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }

@@ -15,6 +15,8 @@ public static class AppInfo
 
     public const string TraySwitch = "--tray"; // started at sign-in: stay in the notification area until needed
     public const string ExitSwitch = "--exit"; // ask the running app to quit properly (it removes its tray icon)
+    public const string RegisterSwitch = "--register";     // install.ps1: open documents and offer for pictures
+    public const string UnregisterSwitch = "--unregister"; // install.ps1 -Uninstall
 
     // The first time MdClip starts, the former name's data folder becomes its own: settings, reading history,
     // remembered folders and the browser profile with the layout and tabs. If the folder cannot be moved

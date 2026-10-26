@@ -15,5 +15,12 @@ static class Native
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int command);
     [DllImport("user32.dll")] public static extern bool AddClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
+    public const int SHCNE_ASSOCCHANGED = 0x08000000;
+    // A registry key's last write time (UTC FILETIME); the other outputs are not asked for.
+    [DllImport("advapi32.dll")]
+    public static extern int RegQueryInfoKey(Microsoft.Win32.SafeHandles.SafeRegistryHandle key, IntPtr cls, IntPtr clsLength, IntPtr reserved,
+        IntPtr subKeys, IntPtr maxSubKeyLength, IntPtr maxClassLength, IntPtr values, IntPtr maxValueNameLength, IntPtr maxValueLength,
+        IntPtr securityDescriptor, out long lastWriteTime);
+    [DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, int flags, IntPtr item1, IntPtr item2);
     [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 }

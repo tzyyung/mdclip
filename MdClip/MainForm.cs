@@ -328,7 +328,7 @@ sealed class MainForm : Form
 
     void SetClipMode(string mode)
     {
-        if (settings.SetClip(mode)) Post(new { type = "clipMode", mode });
+        if (settings.SetClip(mode)) PostWhenReady(new { type = "clipMode", mode });
     }
 
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -396,7 +396,7 @@ sealed class MainForm : Form
         watcher.EnableRaisingEvents = true;
         settings.Root = root;
         if (lastOpened is not null && !IsUnder(lastOpened, root)) lastOpened = null;
-        Post(new { type = "root", root, name = RootName });
+        Post(RootMessage()); // a page still loading gets it when ready, if it was made for another folder
         if (web is null) _ = ScanTree(); // no page to ask for the tree, but clipboard lookups need the file list
     }
 
@@ -413,6 +413,8 @@ sealed class MainForm : Form
     }
 
     string RootName => Path.GetFileName(root) is { Length: > 0 } name ? name : root;
+
+    object RootMessage() => new { type = "root", root, name = RootName };
 
     // Prefer the enclosing git repo so sibling docs show up; otherwise the file's own folder.
     static string FindRoot(string file)
@@ -446,6 +448,9 @@ sealed class MainForm : Form
     {
         if (SafePath.DirectoryExists(path)) { SetRoot(path); return; }
         if (!SafePath.FileExists(path)) return;
+        // A picture (double-clicked in Explorer, dropped): looked at in the picture viewer with the others
+        // beside it, like a copied one; the document stays.
+        if (PreviewOf(path, []) is { } preview) { PostWhenReady(new { type = "preview", preview }); return; }
         var rel = OpenFile(path);
         if (web is not null) { PostWhenReady(new { type = "open", rel, scroll }); return; }
         lastOpened = path; // the page about to load opens it
@@ -498,10 +503,29 @@ sealed class MainForm : Form
                 break;
             case "ready":
                 appReady = true;
+                // The folder may have changed while the page loaded (its "root" then went nowhere): it comes
+                // first, so the messages held for the page are read against the right folder.
+                if (Str("root") != root) Post(RootMessage());
                 foreach (var waiting in afterReady) Post(waiting);
                 afterReady.Clear();
                 GiveFocusBack();
                 returnFocusTo = IntPtr.Zero;
+                break;
+            case "fileTypes": // the settings dialog: asking how things are, or ticking a box
+                if (msg.TryGetProperty("documents", out var docs) && msg.TryGetProperty("pictures", out var pics))
+                {
+                    try { FileTypes.Set(docs.GetBoolean(), pics.GetBoolean()); }
+                    catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException) { Program.LogError(ex); }
+                }
+                Post(FileTypesMessage());
+                break;
+            case "chooseApp": // "改用": MdClip becomes the default for that type
+                if (Str("ext") is var ext && Paths.IsListed(ext) && ext.StartsWith('.'))
+                {
+                    try { FileTypes.MakeDefault(ext); }
+                    catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException) { Program.LogError(ex); }
+                }
+                Post(FileTypesMessage());
                 break;
             case "clipMode": settings.SetClip(Str("mode")); break;
             case "clipList": // "open the first" opened one; now list them all
@@ -670,7 +694,7 @@ sealed class MainForm : Form
         BeginInvoke(() =>
         {
             if (settings.Theme == Themes.Auto) UseTheme(Themes.Auto);
-            Post(new { type = "system", dark });
+            PostWhenReady(new { type = "system", dark });
         });
     }
 
@@ -717,6 +741,9 @@ sealed class MainForm : Form
         e.Cancel = true;
         OpenExternal(e.Uri);
     }
+
+    static object FileTypesMessage() =>
+        new { type = "fileTypes", documents = FileTypes.Documents, pictures = FileTypes.Pictures, types = FileTypes.States() };
 
     static void OpenExternal(string url)
     {
@@ -845,7 +872,7 @@ sealed class MainForm : Form
         if (Visible)
         {
             if (!fromSelf && ClipboardPolicy.Raises(action)) BringToTop(); // copied elsewhere: make sure the viewer is visible
-            Post(Message(action, false));
+            PostWhenReady(Message(action, false));
             return;
         }
 

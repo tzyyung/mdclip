@@ -138,6 +138,18 @@ public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
         Assert.Equal(shot, Found("(docs/shots/流程圖-第1版.png):", Path.Combine(tree.Outside, @"proj\docs")));
     }
 
+    // A terminal's link to a file, with the non-ASCII folder names percent-encoded.
+    [Theory]
+    [InlineData("{0}")]
+    [InlineData("連結 {0} [Ctrl + Click]")]
+    public void Percent_encoded_file_url(string format)
+    {
+        var shot = tree.WriteOutside(@"配模\族群庫\180X10.png");
+        var url = new Uri(shot).AbsoluteUri;
+        Assert.Contains("%E9%85%8D", url);
+        Assert.Equal(shot, Found(string.Format(format, url)));
+    }
+
     [Theory]
     [InlineData(":docs/shots/對照圖-v2.png")]
     [InlineData("見：docs/shots/對照圖-v2.png")]

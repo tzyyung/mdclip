@@ -989,7 +989,7 @@ const HELP = [
     [["更多選單"], "匯出 PDF、複製檔案路徑、在檔案總管顯示"],
   ]],
   ["剪貼簿與背景", [
-    [["複製路徑"], "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；路徑夾在一大段文字裡只提示，一次複製多個檔案會列出來讓你選。在「更多 → 剪貼簿設定」調整"],
+    [["複製路徑"], "剪貼簿出現 .md 或圖片路徑（含檔名、相對路徑）時自動開啟；路徑夾在一大段文字裡只提示，一次複製多個檔案會列出來讓你選。在「更多 → 設定」調整"],
     [["複製圖片路徑"], "在圖片視窗預覽，文件不換頁：← → 看同一資料夾的其他圖片（複製多張就看那幾張），Esc 關閉"],
     [["✕ 關閉"], "縮到右下角系統匣，繼續看剪貼簿；要結束請在系統匣圖示按右鍵 →「結束」"],
     [["系統匣選單"], "最近讀過的檔案、開機時在背景啟動"],
@@ -1035,26 +1035,43 @@ function setClipMode(mode) {
 const radios = (name, choices) => choices.map((c) => `<label><input type="radio" name="${name}" value="${c.id}">${esc(c.label)}</label>`).join("");
 $("clip-modes").outerHTML = radios("mode", cfg.clipModes);
 $("clip-multi").outerHTML = radios("multi", cfg.clipMultiModes);
-$("clipset-form").elements.max.min = cfg.clipMaxRange[0];
-$("clipset-form").elements.max.max = cfg.clipMaxRange[1];
+$("settings-form").elements.max.min = cfg.clipMaxRange[0];
+$("settings-form").elements.max.max = cfg.clipMaxRange[1];
 
 function showClipOptions() {
-  const f = $("clipset-form").elements;
+  const f = $("settings-form").elements;
   f.mode.value = layout.clip;
   f.chars.value = clipOpts.chars;
   f.multi.value = clipOpts.multi;
   f.max.value = clipOpts.max;
 }
 
-function openClipSettings() {
+function openSettings() {
   showClipOptions();
-  openDialog("clipset");
+  post({ type: "fileTypes" }); // answered with how Windows opens them now
+  openDialog("settings");
 }
 
-$("clipset-form").addEventListener("submit", (e) => e.preventDefault());
-$("clipset-form").addEventListener("change", (e) => {
-  const f = $("clipset-form").elements;
+// Which file types MdClip opens: { documents, pictures } ticked; types: [{ ext, mdclip }], whether a
+// double-click opens each in MdClip now. The others get "改用 MdClip" (Windows' own "How do you want to open").
+function showFileTypes(m) {
+  const f = $("settings-form").elements;
+  f.documents.checked = m.documents;
+  f.pictures.checked = m.pictures;
+  $("file-types").innerHTML = m.types.map((t) => `<span class="file-type${t.mdclip ? " on" : ""}"><span>${esc(t.ext)}</span>` +
+    (t.mdclip ? `<span class="ok" title="雙擊用 MdClip 開">✓</span>` : `<button type="button" class="link" data-ext="${esc(t.ext)}" title="改用 MdClip 開 ${esc(t.ext)}">改用</button>`) +
+    `</span>`).join("");
+}
+$("file-types").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-ext]");
+  if (b) post({ type: "chooseApp", ext: b.dataset.ext }); // answered with how the types are now
+});
+
+$("settings-form").addEventListener("submit", (e) => e.preventDefault());
+$("settings-form").addEventListener("change", (e) => {
+  const f = $("settings-form").elements;
   if (e.target.name === "mode") { setClipMode(f.mode.value); return; }
+  if (e.target.type === "checkbox") { post({ type: "fileTypes", documents: f.documents.checked, pictures: f.pictures.checked }); return; }
   Object.assign(clipOpts, { chars: Number(f.chars.value), multi: f.multi.value, max: Number(f.max.value) });
   post({ type: "clipOptions", ...clipOpts });
 });
@@ -1473,7 +1490,7 @@ function openMoreMenu() {
     cfg.clipModes
       .map((m) => `<button data-clip="${m.id}">${icon("copy")}<span>${esc(m.label)}</span>${layout.clip === m.id ? `<span class="tail">${icon("check")}</span>` : ""}</button>`)
       .join("") +
-    item("clipset", "keyboard", "剪貼簿設定…");
+    item("settings", "keyboard", "設定…");
   showMenu($("more-menu"), $("more"));
 }
 
@@ -1490,7 +1507,7 @@ $("more-menu").addEventListener("click", (e) => {
   else if (act === "reload") reloadAll();
   else if (act === "pdf") exportPdf();
   else if (act === "help") openHelp();
-  else if (act === "clipset") openClipSettings();
+  else if (act === "settings") openSettings();
   else if (act === "copy") {
     copyText(fullPath(state.current));
     toast("已複製：" + fullPath(state.current));
@@ -1518,6 +1535,9 @@ function showPictures(items, start = 0) {
   picPane.show(items, start);
   setPicturePane(true);
 }
+
+// Pictures the host found (copied, or opened from Explorer): { items, start }.
+const showPreview = (p) => showPictures(p.items, p.start);
 
 // The pictures and drawn diagrams of the open document, in page order, starting at the one clicked.
 function showDocPictures(doc, pic) {
@@ -1626,7 +1646,7 @@ $("toast").addEventListener("mouseleave", () => { if (!toastUntilInteraction) ar
 function onClipboard(m) {
   const CLIP_MS = "interact", listAll = () => post({ type: "clipList" });
   if (m.preview) { // pictures: looked at over the page, the document stays
-    const show = () => showPictures(m.preview.items, m.preview.start);
+    const show = () => showPreview(m.preview);
     if (m.action === "Preview") show();
     else toast((m.action === "Offer" ? "剪貼簿：" : "剪貼簿裡提到：") + m.preview.items[m.preview.start].name, { label: "預覽", run: show }, CLIP_MS);
     return;
@@ -1774,6 +1794,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "open": openDoc(m.rel, { scroll: m.scroll ?? 0 }); break;
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
+    case "preview": showPreview(m.preview); break;
     case "clipPick": openPick(m.files, m.more); break;
     case "docked": layout.picDock = true; showPictures(m.items, m.start); break;
     case "undocked": layout.picDock = false; setPicturePane(false); break;
@@ -1781,6 +1802,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "history": state.history = m.items; break;
     case "searchResults": onSearchResults(m); break;
     case "clipMode": layout.clip = m.mode; saveLayout(); break;
+    case "fileTypes": showFileTypes(m); break;
     case "clipOptions": Object.assign(clipOpts, { chars: m.chars, multi: m.multi, max: m.max }); showClipOptions(); break;
     case "exported": onExported(m); break;
     case "system":
@@ -1838,4 +1860,4 @@ const startTab = start ? state.tabs.findIndex((t) => t.hist[t.at]?.rel === start
 if (startTab >= 0) { activateTab(startTab); state.hist[state.at].scroll = cfg.startScroll || 0; openActiveTab(); }
 else if (start) navigate(start, "", cfg.startScroll || 0);
 else openActiveTab();
-post({ type: "ready" }); // the host holds clipboard finds and open requests until now
+post({ type: "ready", root: cfg.root }); // the host holds clipboard finds and open requests until now, and says if the folder changed meanwhile

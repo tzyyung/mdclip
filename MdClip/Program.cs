@@ -10,6 +10,13 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // install.ps1: the file types, then done (no window)
+        if (args.Contains(AppInfo.RegisterSwitch) || args.Contains(AppInfo.UnregisterSwitch))
+        {
+            var on = args.Contains(AppInfo.RegisterSwitch);
+            FileTypes.Set(documents: on, pictures: on);
+            return;
+        }
         var startHidden = args.Contains(AppInfo.TraySwitch);
         var path = args.FirstOrDefault(a => !a.StartsWith("--"));
         using var mutex = new Mutex(true, MutexName, out var first);

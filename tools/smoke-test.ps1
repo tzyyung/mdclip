@@ -56,7 +56,16 @@ $wasRunning = [bool](Get-Viewer)
 $lastFile = (Get-Content $settings -ErrorAction SilentlyContinue | Where-Object { $_ -like 'hist=*' } | Select-Object -First 1) -replace '^hist=[^|]*\|(\d+\|)?', ''
 
 $null = Stop-Viewer
-$clip = [Windows.Forms.Clipboard]::GetDataObject()
+# The picture checks start from the picture window, not the docked pane; the user's choice comes back after.
+$pictureDock = (Get-Content $settings -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -like 'picdock=*' } | Select-Object -First 1)
+function Set-PictureDock($line) {
+    if (-not (Test-Path $settings)) { return }
+    $lines = Get-Content $settings -Encoding UTF8 | Where-Object { $_ -notlike 'picdock=*' }
+    if ($line) { $lines = @($lines) + $line }
+    [IO.File]::WriteAllLines($settings, [string[]]$lines, (New-Object Text.UTF8Encoding $false))
+}
+Set-PictureDock 'picdock=0'
+$clip =[Windows.Forms.Clipboard]::GetDataObject()
 $saved = New-Object Windows.Forms.DataObject
 foreach ($format in $clip.GetFormats($false)) { try { $saved.SetData($format, $clip.GetData($format)) } catch { } }
 
@@ -94,6 +103,7 @@ finally {
         $kept = Get-Content $settings -Encoding UTF8 | Where-Object { $_ -notmatch '^(hist|dir)=.*\\tools\\fixtures' }
         [IO.File]::WriteAllLines($settings, [string[]]$kept, (New-Object Text.UTF8Encoding $false))
     }
+    Set-PictureDock $pictureDock
     if ($wasRunning) {
         if ($lastFile -and (Test-Path $lastFile)) { Start-Process $exe -ArgumentList "`"$lastFile`"" } else { Start-Process $exe }
     }
