@@ -40,6 +40,26 @@ public sealed class SettingsTests
     }
 
     [Fact]
+    public void A_bookmark_is_kept_once_per_heading_newest_first()
+    {
+        var (s, _) = Fresh();
+        s.AddBookmark(@"E:\docs\a.md", "", "a.md");
+        s.AddBookmark(@"E:\docs\a.md", "setup", "Setup");
+        s.AddBookmark(@"E:\DOCS\A.md", "", "a.md"); // the same file again: to the front
+        Assert.Equal(["", "setup"], s.Bookmarks.Select(b => b.Hash));
+        s.RemoveBookmark(@"E:\docs\a.md", "setup");
+        Assert.Single(s.Bookmarks);
+    }
+
+    [Fact]
+    public void A_bookmark_line_reads_back_with_a_bar_in_its_title()
+    {
+        var mark = new Bookmark(@"E:\docs\a b.md", "install", "Install | Windows", new DateTime(2026, 11, 5, 9, 30, 0));
+        Assert.Equal(mark with { Title = "Install ｜ Windows" }, Bookmark.Parse(mark.ToString()));
+        Assert.Null(Bookmark.Parse("2026-11-05T09:30:00|x|y|"));
+    }
+
+    [Fact]
     public void Folders_are_kept_once_most_recent_first()
     {
         var (s, _) = Fresh();

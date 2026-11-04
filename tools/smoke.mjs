@@ -184,6 +184,14 @@ await check("heading link copies and reopens at the heading", async () => {
   expect(top >= 0 && top < 120, "heading is at " + top + "px");
 });
 
+await check("bookmarks: the open document is added, listed and removed", async () => {
+  const here = "state.bookmarks.some((b) => b.path.toLowerCase() === fullPath(state.current).toLowerCase())";
+  await js("closeMenus(); openBookmarksMenu(); $('bookmarks-menu').querySelector('[data-mark=add]').click()");
+  await waitFor(here, 5000);
+  await js("openBookmarksMenu(); $('bookmarks-menu').querySelector('[data-mark=remove]').click()");
+  await waitFor("!" + here, 5000);
+});
+
 await check("clipboard: a copied folder is offered (not opened: 打開 would start Explorer)", async () => {
   setClipboard(path.join(fixtures, "pics"));
   await waitFor("!$('toast').hidden && $('toast').textContent.includes('資料夾：pics')", 5000);

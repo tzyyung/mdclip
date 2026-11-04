@@ -70,11 +70,13 @@ $saved = New-Object Windows.Forms.DataObject
 foreach ($format in $clip.GetFormats($false)) { try { $saved.SetData($format, $clip.GetData($format)) } catch { } }
 
 try {
-    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
+    # A port nothing listens on (a fixed one may be taken, e.g. by a Chrome started for debugging).
+    $free = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $free.Start(); $port = $free.LocalEndpoint.Port; $free.Stop()
+    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$port"
     Start-Process $exe -ArgumentList "`"$(Join-Path $fixtures 'guide.md')`""
     $env:SMOKE_ONLY = $Only
     $env:SMOKE_REPEAT = $Repeat
-    node (Join-Path $PSScriptRoot 'smoke.mjs') 9333 $fixtures
+    node (Join-Path $PSScriptRoot 'smoke.mjs') $port $fixtures
     if ($LASTEXITCODE -ne 0) { $failed++ }
     if ($Only) { return } # straight to the clean-up below
 
@@ -98,9 +100,9 @@ finally {
     Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, Env:SMOKE_ONLY, Env:SMOKE_REPEAT -ErrorAction SilentlyContinue
     $null = Stop-Viewer
     [Windows.Forms.Clipboard]::SetDataObject($saved, $true)
-    # keep the fixtures out of the user's reading history and remembered folders
+    # keep the fixtures out of the user's reading history, bookmarks and remembered folders
     if (Test-Path $settings) {
-        $kept = Get-Content $settings -Encoding UTF8 | Where-Object { $_ -notmatch '^(hist|dir)=.*\\tools\\fixtures' }
+        $kept = Get-Content $settings -Encoding UTF8 | Where-Object { $_ -notmatch '^(hist|dir|mark)=.*\\tools\\fixtures' }
         [IO.File]::WriteAllLines($settings, [string[]]$kept, (New-Object Text.UTF8Encoding $false))
     }
     Set-PictureDock $pictureDock

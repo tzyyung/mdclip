@@ -96,6 +96,7 @@ sealed class MainForm : Form
                 treeDirty = false;
                 Post(new { type = "tree" });
                 Post(new { type = "history", items = HistoryItems(recheck: true) }); // files may have gone
+                Post(new { type = "bookmarks", items = BookmarkItems() });
             }
             foreach (var path in changedFiles) Post(new { type = "changed", rel = ToRel(path) });
             changedFiles.Clear();
@@ -566,6 +567,17 @@ sealed class MainForm : Form
                     settings.SetScroll(read, px);
                 break;
             case "search": Search(Str("q"), Str("id")); break;
+            case "addBookmark": // the open document, at a heading or its top
+                if (FromRel(Str("rel")) is { } marked && SafePath.FileExists(marked))
+                {
+                    settings.AddBookmark(marked, Str("hash"), Str("title"));
+                    Post(new { type = "bookmarks", items = BookmarkItems() });
+                }
+                break;
+            case "removeBookmark":
+                settings.RemoveBookmark(Str("path"), Str("hash"));
+                Post(new { type = "bookmarks", items = BookmarkItems() });
+                break;
             case "clearHistory":
                 settings.ClearHistory();
                 Post(new { type = "history", items = HistoryItems() });
@@ -679,7 +691,12 @@ sealed class MainForm : Form
             .ToArray();
     }
 
-    // Whether each history file still exists, as last checked: checked again when the page loads and after
+    // The bookmarks as the web app shows them, with whether each file is still there (checked like the history's).
+    object[] BookmarkItems() => settings.Bookmarks
+        .Select(b => (object)new { path = b.Path, hash = b.Hash, title = b.Title, when = new DateTimeOffset(b.When).ToUnixTimeMilliseconds(), exists = HistoryFileExists(b.Path) })
+        .ToArray();
+
+    // Whether each history or bookmarked file still exists, as last checked: checked again when the page loads and after
     // files change, not on every page turn.
     readonly Dictionary<string, bool> historyExists = new(StringComparer.OrdinalIgnoreCase);
 
@@ -1146,6 +1163,7 @@ sealed class MainForm : Form
                     pictureDock = settings.PictureDock,
                     startScroll = TakeStartScroll(),
                     history = HistoryItems(recheck: true),
+                    bookmarks = BookmarkItems(),
                     themes = Themes.All.Select(t => new { t.Id, t.Name, t.Dark, bg = t.Hex("bg"), accent = t.Hex("accent"), h3 = t.Hex("h3") }),
                 }, Json);
                 return (Encoding.UTF8.GetBytes(Themed("app.html").Replace("/*CONFIG*/", $"window.MD = {config};")), HtmlType);

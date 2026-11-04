@@ -30,6 +30,7 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
   check: '<path d="M5 12l5 5 9-10"/>',
   explorer: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5L12 16l2.5-2.5"/>',
+  bookmark: '<path d="M7 3h10a1 1 0 0 1 1 1v17l-6-4-6 4V4a1 1 0 0 1 1-1z"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 9"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
@@ -67,6 +68,7 @@ const state = {
   headings: [],
   open: new Set(),      // expanded folders, per root
   history: cfg.history ?? [], // files read lately, across all roots: { path, when, exists }
+  bookmarks: cfg.bookmarks ?? [], // { path, hash, title, when, exists }, newest first
   tabs: [emptyTab()], // each tab keeps its own back/forward list; state.hist/at are the active tab's
   tab: 0,
   theme: cfg.theme,
@@ -652,6 +654,13 @@ function lastAbove(count, elAt, limit) {
   return found;
 }
 
+// The heading the reader is in: the last one at the top of the view (as the outline marks it), null above the first.
+function headingHere() {
+  const hs = state.headings;
+  const h = hs.length ? hs[lastAbove(hs.length, (i) => hs[i].el, 100)] : null;
+  return h && h.el.getBoundingClientRect().top <= 100 ? h : null;
+}
+
 // Marks the current section in the outline, touching only the entries that change.
 function updateActiveHeading() {
   const hs = state.headings;
@@ -1002,6 +1011,7 @@ const HELP = [
     [["searchText"], "搜尋這個資料夾所有文件的內文"],
     [["find"], "在本篇中尋找（Enter / Shift+Enter 或 F3 切換）"],
     [["history"], `閱讀紀錄（最近 ${cfg.maxHistory} 個檔案，回到上次讀到的位置）`],
+    [["bookmarks"], "書籤：記下本篇或目前讀到的標題，之後一點就回來"],
     [["openFile", "openFolder"], "開啟檔案 · 開啟資料夾"],
     [["拖曳"], "把檔案或資料夾拖到視窗上就打開"],
   ]],
@@ -1509,6 +1519,55 @@ $("history-menu").addEventListener("click", (e) => {
   else { const h = state.history[+b.dataset.hist]; openHistory(h.path, h.scroll); }
 });
 
+// ---------- bookmarks ----------
+
+// Where the reader is, as a bookmark is kept: the file and the heading ("" above the first one).
+function bookmarkHere() {
+  if (!state.current || isImage(state.current)) return null;
+  const h = headingHere();
+  return { rel: state.current, path: fullPath(state.current), hash: h?.id ?? "", title: h?.text ?? baseName(state.current) };
+}
+
+const sameMark = (b, at) => !!at && b.path.toLowerCase() === at.path.toLowerCase() && b.hash === at.hash;
+
+// Also redrawn while open, when the list changes (a bookmark added or removed from it).
+function renderBookmarksMenu() {
+  const at = bookmarkHere(), marked = state.bookmarks.some((b) => sameMark(b, at));
+  const top = !at ? "" : marked
+    ? `<button data-mark="remove">${icon("bookmark")}<span>移除這裡的書籤</span></button>`
+    : `<button data-mark="add">${icon("plus")}<span>把這裡加入書籤${at.hash ? "：" + esc(at.title) : ""}</span></button>`;
+  const rows = state.bookmarks.map((b, i) =>
+    `<button data-mark="${i}" class="hist${sameMark(b, at) ? " cur" : ""}${b.exists ? "" : " gone"}" title="${esc(b.path + (b.hash ? "#" + b.hash : ""))}">` +
+    `${icon(fileIcon(b.path))}<span class="hn"><span class="t">${esc(b.title || nameOf(b.path))}</span>` +
+    `<span class="s">${esc(!b.exists ? "檔案已不存在" : (b.hash ? nameOf(b.path) + " · " : "") + dirLabel(b.path))}</span></span>` +
+    `<span class="tail x" data-unmark="${i}" title="移除書籤">${icon("close")}</span></button>`);
+  $("bookmarks-menu").innerHTML = top + (top ? "<hr>" : "") + `<div class="label">書籤</div>` +
+    (rows.length ? rows.join("") : `<div class="empty">還沒有書籤</div>`);
+}
+
+function openBookmarksMenu() {
+  renderBookmarksMenu();
+  showMenu($("bookmarks-menu"), $("bookmarks"));
+}
+
+function openBookmark(b) {
+  const rel = relUnderRoot(b.path);
+  if (rel) openDoc(rel, { hash: b.hash }); else requestOpen(b.hash ? b.path + "#" + b.hash : b.path);
+}
+
+$("bookmarks-menu").addEventListener("click", (e) => {
+  const x = e.target.closest("[data-unmark]");
+  if (x) { const b = state.bookmarks[+x.dataset.unmark]; post({ type: "removeBookmark", path: b.path, hash: b.hash }); return; }
+  const btn = e.target.closest("button[data-mark]");
+  if (!btn) return;
+  const v = btn.dataset.mark, at = bookmarkHere();
+  if (v === "add" && at) { post({ type: "addBookmark", rel: at.rel, hash: at.hash, title: at.title }); toast("已加入書籤：" + at.title); }
+  else if (v === "remove" && at) post({ type: "removeBookmark", path: at.path, hash: at.hash });
+  else if (state.bookmarks[+v]?.exists) openBookmark(state.bookmarks[+v]);
+  else return;
+  closeMenus();
+});
+
 function openMoreMenu() {
   const has = !!state.current;
   const item = (act, ic, label, kb = "", enabled = true) =>
@@ -1551,7 +1610,7 @@ $("more-menu").addEventListener("click", (e) => {
   }
 });
 
-document.addEventListener("mousedown", (e) => { if (!e.target.closest(".menu, #theme, #more, #history")) closeMenus(); });
+document.addEventListener("mousedown", (e) => { if (!e.target.closest(".menu, #theme, #more, #history, #bookmarks")) closeMenus(); });
 addEventListener("blur", () => setTimeout(() => { if (document.activeElement === frame) closeMenus(); }));
 
 // ---------- pictures: the picture window, or the pane docked in the main window ----------
@@ -1750,6 +1809,7 @@ const KEYS = {
   openInTab: { keys: ["Ctrl+Enter"], label: "在新分頁開啟" }, // in quick open (its own handler)
   dark: { keys: ["Ctrl+D"], label: "亮色 / 暗色切換", run: () => toggleDark() },
   history: { keys: ["Ctrl+H"], label: "閱讀紀錄", run: () => openHistoryMenu() },
+  bookmarks: { keys: ["Ctrl+Shift+D"], label: "書籤", run: () => openBookmarksMenu() },
   newTab: { keys: ["Ctrl+T"], label: "新分頁", run: () => newTab() },
   closeTab: { keys: ["Ctrl+W"], label: "關閉分頁", run: () => closeTab(state.tab) },
   nextTab: { keys: ["Ctrl+Tab", "Ctrl+PageDown"], label: "下一個分頁", run: () => switchTab(state.tab + 1) },
@@ -1839,6 +1899,7 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "docked": layout.picDock = true; showPictures(m.items, m.start); break;
     case "undocked": layout.picDock = false; setPicturePane(false); break;
     case "history": state.history = m.items; break;
+    case "bookmarks": state.bookmarks = m.items; if (!$("bookmarks-menu").hidden) renderBookmarksMenu(); break;
     case "searchResults": onSearchResults(m); break;
     case "clipMode": layout.clip = m.mode; saveLayout(); break;
     case "fileTypes": showFileTypes(m); break;
@@ -1858,6 +1919,7 @@ setIcon("back", "back");
 setIcon("forward", "forward");
 setIcon("reload", "reload");
 setIcon("history", "clock");
+setIcon("bookmarks", "bookmark");
 setIcon("toggle-side", "side");
 setIcon("toggle-toc", "toc");
 setIcon("toggle-zen", "zen");

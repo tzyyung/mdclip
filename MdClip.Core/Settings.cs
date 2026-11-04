@@ -2,7 +2,7 @@ namespace MdClip;
 
 // Everything MdClip remembers, in %LOCALAPPDATA%\MdClip\theme.txt: the theme and the last light and dark
 // picks, the last root folder, the clipboard options, the folders of files opened or copied (most recent
-// first; used to find copied bare file names) and the reading history.
+// first; used to find copied bare file names), the reading history and the bookmarks.
 // Every change raises Changed; the app saves once the changes pause (see MainForm), so a burst of changes
 // is one write. The valid values of each option are defined here and nowhere else.
 public sealed class Settings
@@ -10,7 +10,7 @@ public sealed class Settings
     static readonly string FilePath = Path.Combine(AppInfo.DataDir, "theme.txt");
 
     const int MaxDirs = 200;
-    public const int MaxHistory = 30;
+    public const int MaxHistory = 30, MaxBookmarks = 100;
 
     public const string ClipAuto = "auto", ClipHint = "hint", ClipOff = "off";
     public const string MultiList = "list", MultiFirst = "first";
@@ -41,6 +41,8 @@ public sealed class Settings
     readonly List<HistoryEntry> history = [];
     public IReadOnlyList<string> Dirs => dirs;
     public IReadOnlyList<HistoryEntry> History => history; // most recently read first
+    readonly List<Bookmark> bookmarks = [];
+    public IReadOnlyList<Bookmark> Bookmarks => bookmarks; // most recently added first
 
     // Each setter ignores a value outside its option's range; true when it was taken.
     public bool SetClip(string mode) => ClipModes.Any(m => m.Id == mode) && Set(() => Clip = mode);
@@ -71,6 +73,7 @@ public sealed class Settings
                     case "picwin": s.pictureWindow = value; break;
                     case "dir" when value.Length > 0: s.dirs.Add(value); break;
                     case "hist" when HistoryEntry.Parse(value) is { } h: s.history.Add(h); break;
+                    case "mark" when Bookmark.Parse(value) is { } b: s.bookmarks.Add(b); break;
                 }
             }
         }
@@ -90,7 +93,7 @@ public sealed class Settings
                 [$"theme={Theme}", $"light={LastLight}", $"dark={LastDark}", $"root={Root}", $"clip={Clip}", $"clipchars={ClipChars}",
                  $"clipmulti={ClipMulti}", $"clipmax={ClipMax}", $"trayhint={(TrayHintShown ? 1 : 0)}",
                  $"picdock={(PictureDock ? 1 : 0)}", $"picwin={PictureWindow}",
-                 .. dirs.Select(d => $"dir={d}"), .. history.Select(h => $"hist={h}")]);
+                 .. dirs.Select(d => $"dir={d}"), .. history.Select(h => $"hist={h}"), .. bookmarks.Select(b => $"mark={b}")]);
             File.Move(temp, FilePath, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -142,6 +145,23 @@ public sealed class Settings
         Changed?.Invoke();
     }
 
+    // A file, or a heading in it (hash, "" for the file itself), once; marking it again moves it to the front.
+    public void AddBookmark(string path, string hash, string title)
+    {
+        RemoveMark(path, hash);
+        bookmarks.Insert(0, new Bookmark(path, hash, title, DateTime.Now));
+        if (bookmarks.Count > MaxBookmarks) bookmarks.RemoveRange(MaxBookmarks, bookmarks.Count - MaxBookmarks);
+        Changed?.Invoke();
+    }
+
+    public void RemoveBookmark(string path, string hash)
+    {
+        if (RemoveMark(path, hash)) Changed?.Invoke();
+    }
+
+    bool RemoveMark(string path, string hash) =>
+        bookmarks.RemoveAll(b => b.Path.Equals(path, StringComparison.OrdinalIgnoreCase) && b.Hash == hash) > 0;
+
     bool Set<T>(ref T field, T value)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
@@ -171,4 +191,15 @@ public sealed record HistoryEntry(string Path, DateTime When, int Scroll = 0)
             return parts[2].Length > 0 ? new HistoryEntry(parts[2], when, scroll) : null;
         return parts[1].Length > 0 ? new HistoryEntry(parts[1], when) : null;
     }
+}
+
+// A bookmarked file, at a heading (Hash: its id, "" for the top) whose text is Title. Stored as
+// "when|hash|title|path"; a "|" in the title is stored as "｜".
+public sealed record Bookmark(string Path, string Hash, string Title, DateTime When)
+{
+    public override string ToString() => $"{When:yyyy-MM-ddTHH:mm:ss}|{Hash.Replace('|', '｜')}|{Title.Replace('|', '｜')}|{Path}";
+
+    public static Bookmark? Parse(string value) =>
+        value.Split('|', 4) is [var when, var hash, var title, { Length: > 0 } path] && DateTime.TryParse(when, out var w)
+            ? new Bookmark(path, hash, title, w) : null;
 }
