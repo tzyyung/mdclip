@@ -19,7 +19,7 @@
   const view = mdPictures(document.getElementById("pictures"), {
     onIndex: (i) => post({ type: "at", i }),
     actions: [
-      { label: "停靠到主視窗", title: "停靠在主視窗右側（把這個視窗拖到主視窗上也可以）", run: () => post({ type: "dock" }) },
+      { label: "停靠到主視窗", title: "停靠在主視窗右側", run: () => post({ type: "dock" }) },
       { label: "✕", title: "關閉 (Esc)", run: () => post({ type: "close" }) },
     ],
   });

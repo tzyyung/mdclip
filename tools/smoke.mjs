@@ -184,6 +184,11 @@ await check("heading link copies and reopens at the heading", async () => {
   expect(top >= 0 && top < 120, "heading is at " + top + "px");
 });
 
+await check("clipboard: a copied folder is offered (not opened: 打開 would start Explorer)", async () => {
+  setClipboard(path.join(fixtures, "pics"));
+  await waitFor("!$('toast').hidden && $('toast').textContent.includes('資料夾：pics')", 5000);
+});
+
 await check("pictures: a copied picture opens in the picture window; dock and pop out", async () => {
   const page = await js("state.current");
   setClipboard(path.join(fixtures, "pics", "dot.png"));

@@ -265,13 +265,6 @@ body.has-pic { --pw: var(--pic-w); }
 .pic-pane:focus { outline: none; }
 #resizer-pic { grid-area: rez-pic; display: none; }
 .has-pic #resizer-pic { display: block; }
-/* While the picture window is dragged over the main window: where letting go docks it. */
-.dock-hint { position: fixed; top: var(--th); right: 0; bottom: 0; width: min(40vw, 560px); z-index: 70; padding: 12px; pointer-events: none; }
-.dock-box {
-  height: 100%; display: grid; place-items: center; border: 2px dashed var(--accent); border-radius: 12px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: 16px; font-weight: 600;
-}
-
 /* ---------- toast ---------- */
 .toast {
   position: fixed; right: 20px; bottom: 18px; z-index: 60;

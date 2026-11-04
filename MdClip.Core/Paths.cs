@@ -24,6 +24,12 @@ public static class Paths
 
     public static bool IsImage(string path) => Images.Contains(Path.GetExtension(path));
 
+    // Files MdClip does not show but offers from the clipboard, to open with the app Windows opens them with.
+    public static readonly string[] OfferedExtensions = [".html", ".htm", ".txt", ".json"];
+    static readonly HashSet<string> Offered = new(OfferedExtensions, StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsOffered(string path) => Offered.Contains(Path.GetExtension(path));
+
     // What the tree lists and the watcher cares about.
     public static bool IsListed(string path) => IsMarkdown(path) || IsImage(path);
 

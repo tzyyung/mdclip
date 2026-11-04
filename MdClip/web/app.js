@@ -583,6 +583,43 @@ $("crumbs").addEventListener("click", (e) => {
   else $("tree").scrollTo({ top: 0 });
 });
 
+// Right-click on a folder or file in the tree or the path above the page: Explorer, the file's own app, its path.
+function openPathMenu(e, rel, isDir) {
+  e.preventDefault();
+  const menu = $("path-menu");
+  menu.dataset.rel = rel;
+  menu.innerHTML =
+    `<button data-act="reveal">${icon("explorer")}<span>打開目錄</span></button>` +
+    (isDir ? "" : `<button data-act="open">${icon(fileIcon(rel))}<span>打開檔案</span></button>`) +
+    `<button data-act="copy">${icon("copy")}<span>複製路徑</span></button>`;
+  closeMenus();
+  menu.hidden = false;
+  menu.style.top = Math.min(e.clientY, innerHeight - menu.offsetHeight - 8) + "px";
+  menu.style.left = Math.min(e.clientX, innerWidth - menu.offsetWidth - 8) + "px";
+}
+
+$("crumbs").addEventListener("contextmenu", (e) => {
+  const b = e.target.closest("button[data-dir], .cur");
+  if (b) openPathMenu(e, b.dataset.dir ?? state.current, b.dataset.dir !== undefined);
+});
+$("tree").addEventListener("contextmenu", (e) => {
+  const row = e.target.closest(".row");
+  if (row) openPathMenu(e, row.dataset.dir ?? row.dataset.rel, row.dataset.dir !== undefined);
+});
+$("path-menu").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  closeMenus();
+  const rel = $("path-menu").dataset.rel;
+  if (b.dataset.act === "reveal") post({ type: "reveal", rel });
+  else if (b.dataset.act === "open") post({ type: "shellOpen", rel });
+  else {
+    const path = rel ? fullPath(rel) : rootDir();
+    copyText(path);
+    toast("已複製：" + path);
+  }
+});
+
 // ---------- outline ----------
 
 function collectHeadings(doc) {
@@ -983,7 +1020,7 @@ const HELP = [
     [["拖曳邊線"], "調整側欄和大綱寬度，雙擊恢復"],
   ]],
   ["文件裡", [
-    [["點圖片"], "在圖片視窗看大圖：滾輪縮放、拖曳移動、← → 切換。把圖片視窗拖到主視窗上會停靠在右側，按「彈出」再變回視窗"],
+    [["點圖片"], "在圖片視窗看大圖：滾輪縮放、拖曳移動、← → 切換。圖片視窗按「停靠到主視窗」會停靠在右側，按「彈出」再變回視窗"],
     [["程式碼右上角"], "複製程式碼"],
     [["標題左邊的 🔗"], "複製「檔案路徑#標題」，貼回來會直接跳到那一節"],
     [["更多選單"], "匯出 PDF、複製檔案路徑、在檔案總管顯示"],
@@ -1519,8 +1556,8 @@ addEventListener("blur", () => setTimeout(() => { if (document.activeElement ===
 
 // ---------- pictures: the picture window, or the pane docked in the main window ----------
 
-// The pane shows them when docked; otherwise the host's picture window does (PictureWindow.cs). Dragging the
-// window onto the main window docks it; the pane's "彈出" undocks it. The host remembers which was used last.
+// The pane shows them when docked; otherwise the host's picture window does (PictureWindow.cs). Its
+// "停靠到主視窗" docks it; the pane's "彈出" undocks it. The host remembers which was used last.
 const picPane = mdPictures($("pic-pane"), {
   actions: [
     { label: "彈出", title: "開成獨立視窗", run: () => post({ type: "undock", items: picPane.items, start: picPane.index }) },
@@ -1795,10 +1832,12 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
     case "preview": showPreview(m.preview); break;
+    case "clipOther": // a copied folder, or a file MdClip does not show (.html, .txt, .json): Windows opens it
+      toast(`剪貼簿裡有${m.dir ? "資料夾" : "檔案"}：${m.name}`, { label: "打開", run: () => post({ type: "openOther", path: m.path }) }, "interact");
+      break;
     case "clipPick": openPick(m.files, m.more); break;
     case "docked": layout.picDock = true; showPictures(m.items, m.start); break;
     case "undocked": layout.picDock = false; setPicturePane(false); break;
-    case "dockHint": $("dock-hint").hidden = !m.on; break;
     case "history": state.history = m.items; break;
     case "searchResults": onSearchResults(m); break;
     case "clipMode": layout.clip = m.mode; saveLayout(); break;

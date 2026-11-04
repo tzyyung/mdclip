@@ -4,10 +4,10 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace MdClip;
 
-// The pictures' own window (pictures.html in a web view sharing the main window's browser environment): it
-// can sit beside the main window or on another screen. Owned by the main window, so reading there never
-// buries it. Dragging it tells the main window where it is going (Dragging, then Dropped), which docks it as
-// a pane when it is let go over itself; MainForm decides.
+// The pictures' own window (pictures.html in a web view on the main window's browser profile): it can sit
+// beside the main window or on another screen. A window of its own, with its own taskbar button: it opens,
+// minimizes and closes without the main window, which may stay hidden in the tray meanwhile. Its "停靠到主視窗"
+// moves the pictures into a pane of the main window; MainForm decides.
 sealed class PictureWindow : Form
 {
     readonly WebView2 web = new() { Dock = DockStyle.Fill };
@@ -15,25 +15,23 @@ sealed class PictureWindow : Form
     bool ready;
 
     public event Action<string, JsonElement>? Message; // the page's "at", "dock" and "close"
-    public event Action? Dragging, Dropped;
 
-    public PictureWindow(Form owner, CoreWebView2Environment environment, string url,
+    public PictureWindow(Icon icon, Color background, Task<CoreWebView2Environment> environment, string url,
         EventHandler<CoreWebView2WebResourceRequestedEventArgs> serve, string origin)
     {
-        Owner = owner;
         Text = "圖片 — " + AppInfo.Name;
-        Icon = owner.Icon;
-        BackColor = owner.BackColor;
+        Icon = icon;
+        BackColor = background;
         StartPosition = FormStartPosition.Manual;
         web.DefaultBackgroundColor = BackColor;
         Controls.Add(web);
         _ = StartAsync(environment, url, serve, origin);
     }
 
-    async Task StartAsync(CoreWebView2Environment environment, string url,
+    async Task StartAsync(Task<CoreWebView2Environment> environment, string url,
         EventHandler<CoreWebView2WebResourceRequestedEventArgs> serve, string origin)
     {
-        try { await web.EnsureCoreWebView2Async(environment); }
+        try { await web.EnsureCoreWebView2Async(await environment); }
         catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException or ObjectDisposedException) { return; }
         var core = web.CoreWebView2;
         core.Settings.IsZoomControlEnabled = false;
@@ -60,15 +58,6 @@ sealed class PictureWindow : Form
     {
         if (ready && web.CoreWebView2 is { } core) core.PostWebMessageAsJson(json);
         else waiting.Add(json);
-    }
-
-    // Moving by its title bar: WM_MOVING while it goes, WM_EXITSIZEMOVE when it is let go.
-    protected override void WndProc(ref Message m)
-    {
-        const int WM_MOVING = 0x0216, WM_EXITSIZEMOVE = 0x0232;
-        base.WndProc(ref m);
-        if (m.Msg == WM_MOVING) Dragging?.Invoke();
-        else if (m.Msg == WM_EXITSIZEMOVE) Dropped?.Invoke();
     }
 
     // Where it is (not maximized), as Settings stores it: "x,y,width,height".

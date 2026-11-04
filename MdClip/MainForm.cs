@@ -32,11 +32,13 @@ sealed class MainForm : Form
 
     WebView2? web; // null while the window is hidden in the tray, so the browser processes can exit
     readonly NotifyIcon tray = new() { Text = AppInfo.Name };
-    readonly bool startHidden;
+    bool startHidden;
     bool exiting, showQuietly, appReady, listening;
     string? lastOpened; // full path of the open document, reopened when the window comes back
     readonly List<object> afterReady = []; // messages for a page that is still loading
     object? hintedClipboard; // clipboard find announced in a tray notification, opened if it is clicked
+    Preview? hintedPreview; // its pictures, if it is about pictures
+    string? hintedOther; // or a folder or web page to open with Windows (OfferOther)
     IntPtr returnFocusTo; // the window the user was typing in when a clipboard copy brought ours back
     int startScroll; // reading position for the document the next page load opens (a tray "最近讀過" pick)
     string exportHtml = ""; // the page being turned into a PDF, served at __export
@@ -113,7 +115,7 @@ sealed class MainForm : Form
     // those, the last root.
     void OpenStart(string? startPath)
     {
-        if (startPath is not null) OpenAny(Path.GetFullPath(startPath));
+        if (startPath is not null) startHidden |= !OpenAny(Path.GetFullPath(startPath)); // a picture: its window only
         else if (SafePath.DirectoryExists(settings.Root) && settings.History.FirstOrDefault() is { } last
                  && IsUnder(last.Path, settings.Root) && SafePath.FileExists(last.Path))
         {
@@ -147,13 +149,15 @@ sealed class MainForm : Form
         core.Navigate(Origin + "__app/" + (startRel is null ? "" : "#" + Uri.EscapeDataString(startRel)));
     }
 
+    // The browser profile: the main window's and the picture window's web views share it (and its processes).
+    string webDataDir = Path.Combine(AppInfo.DataDir, "WebView2");
+
     async Task<WebView2> CreateWebViewAsync()
     {
-        var dataDir = Path.Combine(AppInfo.DataDir, "WebView2");
         var view = AddWebView();
         try
         {
-            await view.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, dataDir));
+            await view.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, webDataDir));
             return view;
         }
         // Not when the start was cancelled by hiding or quitting (E_ABORT): nothing is wrong then.
@@ -165,8 +169,8 @@ sealed class MainForm : Form
             Controls.Remove(view);
             view.Dispose();
             view = AddWebView();
-            var privateDir = Path.Combine(Path.GetTempPath(), AppInfo.Name, "WebView2-" + Environment.ProcessId);
-            await view.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, privateDir));
+            webDataDir = Path.Combine(Path.GetTempPath(), AppInfo.Name, "WebView2-" + Environment.ProcessId);
+            await view.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, webDataDir));
             return view;
         }
     }
@@ -226,11 +230,14 @@ sealed class MainForm : Form
         tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ShowFromTray(activate: true); };
         tray.BalloonTipClicked += (_, _) =>
         {
-            if (hintedClipboard is { } message) PostWhenReady(message);
-            hintedClipboard = null;
+            var (message, preview, other) = (hintedClipboard, hintedPreview, hintedOther);
+            (hintedClipboard, hintedPreview, hintedOther) = (null, null, null);
+            if (other is not null) { OpenOther(other); return; }
+            if (preview is not null && !settings.PictureDock) { ShowPictureWindow(preview); return; }
+            if (message is not null) PostWhenReady(message);
             ShowFromTray(activate: true);
         };
-        tray.BalloonTipClosed += (_, _) => hintedClipboard = null;
+        tray.BalloonTipClosed += (_, _) => (hintedClipboard, hintedPreview, hintedOther) = (null, null, null);
         tray.Visible = true;
         Disposed += (_, _) => tray.Dispose();
     }
@@ -244,13 +251,14 @@ sealed class MainForm : Form
             HideToTray();
             return;
         }
+        pictureWindow?.Close(); // its placement is saved with the rest
         FlushSettings();
         tray.Visible = false;
     }
 
+    // The picture window, a window of its own, stays.
     void HideToTray()
     {
-        pictureWindow?.Close();
         Hide();
         ReleaseWebView();
         var firstTime = !settings.TrayHintShown;
@@ -322,8 +330,7 @@ sealed class MainForm : Form
     // From the tray's "最近讀過": opens at the last reading position.
     void OpenRecent(HistoryEntry h)
     {
-        OpenAny(h.Path, h.Scroll);
-        ShowFromTray(activate: true);
+        if (OpenAny(h.Path, h.Scroll)) ShowFromTray(activate: true);
     }
 
     void SetClipMode(string mode)
@@ -382,8 +389,7 @@ sealed class MainForm : Form
     void OpenFromOtherInstance(string? path)
     {
         if (path == AppInfo.ExitSwitch) { ExitApp(); return; }
-        if (!string.IsNullOrEmpty(path)) OpenAny(path);
-        ShowFromTray(activate: true);
+        if (string.IsNullOrEmpty(path) || OpenAny(path)) ShowFromTray(activate: true);
     }
 
     // ---------- root & paths ----------
@@ -444,17 +450,24 @@ sealed class MainForm : Form
 
     // Shows what a path names, however it arrived (the command line, another launch, a drop, the file dialog,
     // the tray's recent files): a folder becomes the root; a file opens, at a reading position if given.
-    void OpenAny(string path, int scroll = 0)
+    // False when the main window is not needed for it: a picture shown in the picture window alone.
+    bool OpenAny(string path, int scroll = 0)
     {
-        if (SafePath.DirectoryExists(path)) { SetRoot(path); return; }
-        if (!SafePath.FileExists(path)) return;
+        if (SafePath.DirectoryExists(path)) { SetRoot(path); return true; }
+        if (!SafePath.FileExists(path)) return true;
         // A picture (double-clicked in Explorer, dropped): looked at in the picture viewer with the others
         // beside it, like a copied one; the document stays.
-        if (PreviewOf(path, []) is { } preview) { PostWhenReady(new { type = "preview", preview }); return; }
+        if (PreviewOf(path, []) is { } preview)
+        {
+            if (!settings.PictureDock) { ShowPictureWindow(preview); return false; }
+            PostWhenReady(new { type = "preview", preview });
+            return true;
+        }
         var rel = OpenFile(path);
-        if (web is not null) { PostWhenReady(new { type = "open", rel, scroll }); return; }
+        if (web is not null) { PostWhenReady(new { type = "open", rel, scroll }); return true; }
         lastOpened = path; // the page about to load opens it
         startScroll = scroll;
+        return true;
     }
 
     // For a path the page asked for: a folder becomes the root (null), a file is opened by the page.
@@ -570,8 +583,13 @@ sealed class MainForm : Form
                 break;
             case "pickFile": PickFile(); break;
             case "pickFolder": PickFolder(); break;
-            case "reveal":
-                if (FromRel(Str("rel")) is { } file) Process.Start("explorer.exe", $"/select,\"{file}\"");
+            case "reveal": // a folder opens in Explorer; a file shows selected in its folder
+                if ((Str("rel") is "" ? root : FromRel(Str("rel"))) is { } shown)
+                    Process.Start("explorer.exe", SafePath.FileExists(shown) ? $"/select,\"{shown}\"" : $"\"{shown}\"");
+                break;
+            case "openOther": OpenOther(Str("path")); break; // a copied folder or .html/.txt/.json, see OfferOther
+            case "shellOpen": // with the app Windows opens it with
+                if (FromRel(Str("rel")) is { } file && SafePath.FileExists(file)) OpenExternal(file);
                 break;
             case "external": OpenExternal(Str("url")); break;
             case "copy": CopyToClipboard(Str("text")); break;
@@ -600,9 +618,7 @@ sealed class MainForm : Form
     // Files or a folder dragged onto the window: the first one opens.
     void OpenDropped(List<string> paths)
     {
-        if (paths.FirstOrDefault() is not { } path) return;
-        OpenAny(path);
-        Activate();
+        if (paths.FirstOrDefault() is { } path && OpenAny(path)) Activate();
     }
 
     // The page sends its document as displayed (code colours, drawn diagrams, light theme); a hidden
@@ -795,7 +811,7 @@ sealed class MainForm : Form
 
     // The pictures a clipboard find is about, to look through over the page: the copied pictures, or one
     // picture and the others in its folder. Null when the find is not all pictures.
-    object? PreviewOf(string? found, List<string> files)
+    Preview? PreviewOf(string? found, List<string> files)
     {
         var (items, start) = files.Count > 1 && files.All(IsImage) ? (files, 0)
             : (found ?? (files.Count == 1 ? files[0] : null)) is { } one && IsImage(one) ? Pictures.Beside(one)
@@ -803,8 +819,12 @@ sealed class MainForm : Form
         if (items is null) return null;
         previews[++previewSet] = items;
         previews.Remove(previewSet - 5);
-        return new { start, items = items.Select((p, i) => new { src = $"/__preview/{previewSet}/{i}", name = Path.GetFileName(p), path = p }) };
+        return new(start, items.Select((p, i) => new PreviewItem($"/__preview/{previewSet}/{i}", Path.GetFileName(p), p)).ToList());
     }
+
+    // As the page and the picture window take them: { start, items: [{ src, name, path }] }.
+    sealed record Preview(int Start, List<PreviewItem> Items);
+    sealed record PreviewItem(string Src, string Name, string Path);
 
     string? PreviewPath(string rel) =>
         rel.Split('/') is ["__preview", var set, var n] && int.TryParse(set, out var s) && int.TryParse(n, out var i)
@@ -847,7 +867,11 @@ sealed class MainForm : Form
         }
         lastClipboardSeq = seq;
 
-        if (found is null && matches.Count == 0 && files.Count == 0) return;
+        if (found is null && matches.Count == 0 && files.Count == 0)
+        {
+            if (clipText is not null && settings.Clip != Settings.ClipOff) OfferOther(clipText);
+            return;
+        }
         // What to do is decided once, here (ClipboardPolicy); the page carries it out. force: the user clicked
         // the tray notification.
         var fromSelf = ActiveForm == this;
@@ -869,6 +893,8 @@ sealed class MainForm : Form
         ClipAction Decide(bool force) => ClipboardPolicy.Decide(settings.Clip, settings.ClipMulti, deliberate, files.Count > 0, force, preview is not null);
         var action = Decide(force: false);
         if (action == ClipAction.None) return;
+        // Pictures undocked: their own window shows them, the main window stays as it is.
+        if (action == ClipAction.Preview && !settings.PictureDock) { ShowPictureWindow(preview!); return; }
         if (Visible)
         {
             if (!fromSelf && ClipboardPolicy.Raises(action)) BringToTop(); // copied elsewhere: make sure the viewer is visible
@@ -881,6 +907,7 @@ sealed class MainForm : Form
         if (ClipboardPolicy.Notifies(action))
         {
             hintedClipboard = Message(Decide(force: true), true);
+            hintedPreview = preview;
             var (title, body) = files.Count > 0
                 ? ($"剪貼簿裡有{(more ? "超過 " : " ")}{files.Count} 個可以開啟的檔案", "點這裡選擇")
                 : ("剪貼簿裡有可以開啟的檔案", $"{Path.GetFileName(found ?? matches[0])}（點這裡開啟）");
@@ -889,6 +916,23 @@ sealed class MainForm : Form
         }
         PostWhenReady(Message(action, false));
         ShowFromTray(activate: false);
+    }
+
+    // A copied path, alone, of a folder or of a file MdClip does not show (.html, .txt, .json: IsOffered): only
+    // offered, to open in Explorer or the file's own app (OpenOther); in the page's notice, or the tray's while hidden.
+    void OfferOther(string text)
+    {
+        if (Find(f => f.Resolve(text)) is not { } path || !(IsOffered(path) || SafePath.DirectoryExists(path))) return;
+        if (Visible) { PostWhenReady(new { type = "clipOther", path, name = Path.GetFileName(path.TrimEnd('\\')), dir = !IsOffered(path) }); return; }
+        hintedOther = path;
+        tray.ShowBalloonTip(6000, IsOffered(path) ? "剪貼簿裡有檔案" : "剪貼簿裡有資料夾", $"{Path.GetFileName(path.TrimEnd('\\'))}（點這裡打開）", ToolTipIcon.None);
+    }
+
+    // A folder opens in Explorer, an offered file in its own app; nothing else (the page names the path).
+    static void OpenOther(string path)
+    {
+        if (IsOffered(path) && SafePath.FileExists(path)) OpenExternal(path);
+        else if (SafePath.DirectoryExists(path)) Process.Start("explorer.exe", $"\"{path}\"");
     }
 
     // Puts the window on top of the others so a clipboard-triggered page is visible, without taking
@@ -905,23 +949,29 @@ sealed class MainForm : Form
     PictureWindow? pictureWindow;
     JsonElement pictures; // what it shows, and which one (kept for docking)
     int pictureIndex;
-    bool dockHint; // the main window is showing "let go to dock here"
+
+    // Pictures the host found (opened from Explorer, copied), while they are not docked.
+    void ShowPictureWindow(Preview preview)
+    {
+        pictures = JsonSerializer.SerializeToElement(preview.Items, Json);
+        pictureIndex = preview.Start;
+        ShowPictureWindow();
+    }
 
     void ShowPictureWindow()
     {
-        if (web?.CoreWebView2 is not { } core) return;
         if (pictureWindow is null)
         {
-            var w = pictureWindow = new PictureWindow(this, core.Environment, Origin + "__app/pictures.html", OnResourceRequested, Origin);
+            var w = pictureWindow = new PictureWindow(AppIcon, BackColor, CoreWebView2Environment.CreateAsync(null, webDataDir),
+                Origin + "__app/pictures.html", OnResourceRequested, Origin);
             w.Bounds = PictureWindowBounds();
             w.Message += OnPictureMessage;
-            w.Dragging += OnPictureDragging;
-            w.Dropped += OnPictureDropped;
             w.FormClosed += (_, _) => { settings.PictureWindow = w.Placement; pictureWindow = null; };
-            w.Show(this);
+            w.Show();
         }
         pictureWindow.Post(JsonSerializer.Serialize(new { type = "show", items = pictures, start = pictureIndex }, Json));
         pictureWindow.Post(JsonSerializer.Serialize(new { type = "theme", id = theme.Id }, Json));
+        if (pictureWindow.WindowState == FormWindowState.Minimized) pictureWindow.WindowState = FormWindowState.Normal;
         pictureWindow.Activate();
     }
 
@@ -934,7 +984,9 @@ sealed class MainForm : Form
             && width >= 200 && height >= 150 && Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(new Rectangle(left, top, width, height))))
             return new Rectangle(left, top, width, height);
         var area = Screen.FromControl(this).WorkingArea;
-        var size = new Size(Math.Max(480, Width * 45 / 100), Height);
+        var size = new Size(Math.Max(480, Width * 45 / 100), Math.Min(Height, area.Height));
+        if (!Visible) // the main window is in the tray: the middle of the screen
+            return new Rectangle(area.Left + (area.Width - size.Width) / 2, area.Top + (area.Height - size.Height) / 2, size.Width, size.Height);
         var beside = Right + size.Width <= area.Right ? Right : area.Right - size.Width;
         return new Rectangle(beside, Top, size.Width, size.Height);
     }
@@ -946,30 +998,14 @@ sealed class MainForm : Form
         else if (type == "dock") DockPictures();
     }
 
-    // While the picture window is dragged: over the main window, the page shows where it would dock.
-    void OnPictureDragging()
-    {
-        var over = Visible && WindowState != FormWindowState.Minimized && Bounds.Contains(Cursor.Position);
-        if (over == dockHint) return;
-        dockHint = over;
-        Post(new { type = "dockHint", on = over });
-    }
-
-    void OnPictureDropped()
-    {
-        if (!dockHint) return;
-        dockHint = false;
-        Post(new { type = "dockHint", on = false });
-        DockPictures();
-    }
-
-    // The pictures move into a pane of the main window, at the same picture; later ones go there too.
+    // The picture window's "停靠到主視窗": the pictures move into a pane of the main window (shown if it was in
+    // the tray), at the same picture; later ones go there too.
     void DockPictures()
     {
         settings.PictureDock = true;
-        Post(new { type = "docked", items = pictures, start = pictureIndex });
+        PostWhenReady(new { type = "docked", items = pictures, start = pictureIndex });
         pictureWindow?.Close();
-        Activate();
+        ShowFromTray(activate: true);
     }
 
     // ---------- theme ----------
