@@ -36,9 +36,7 @@ sealed class MainForm : Form
     bool exiting, showQuietly, appReady, listening;
     string? lastOpened; // full path of the open document, reopened when the window comes back
     readonly List<object> afterReady = []; // messages for a page that is still loading
-    object? hintedClipboard; // clipboard find announced in a tray notification, opened if it is clicked
-    Preview? hintedPreview; // its pictures, if it is about pictures
-    string? hintedOther; // or a folder or web page to open with Windows (OfferOther)
+    DesktopToast? desktopToast; // the clipboard notice on the desktop, while MdClip is not the window in use
     IntPtr returnFocusTo; // the window the user was typing in when a clipboard copy brought ours back
     int startScroll; // reading position for the document the next page load opens (a tray "最近讀過" pick)
     string exportHtml = ""; // the page being turned into a PDF, served at __export
@@ -229,16 +227,6 @@ sealed class MainForm : Form
         tray.Icon = AppIcon;
         tray.ContextMenuStrip = menu;
         tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ShowFromTray(activate: true); };
-        tray.BalloonTipClicked += (_, _) =>
-        {
-            var (message, preview, other) = (hintedClipboard, hintedPreview, hintedOther);
-            (hintedClipboard, hintedPreview, hintedOther) = (null, null, null);
-            if (other is not null) { OpenOther(other); return; }
-            if (preview is not null && !settings.PictureDock) { ShowPictureWindow(preview); return; }
-            if (message is not null) PostWhenReady(message);
-            ShowFromTray(activate: true);
-        };
-        tray.BalloonTipClosed += (_, _) => (hintedClipboard, hintedPreview, hintedOther) = (null, null, null);
         tray.Visible = true;
         Disposed += (_, _) => tray.Dispose();
     }
@@ -253,6 +241,7 @@ sealed class MainForm : Form
             return;
         }
         pictureWindow?.Close(); // its placement is saved with the rest
+        desktopToast?.Close();
         FlushSettings();
         tray.Visible = false;
     }
@@ -599,7 +588,7 @@ sealed class MainForm : Form
                 if ((Str("rel") is "" ? root : FromRel(Str("rel"))) is { } shown)
                     Process.Start("explorer.exe", SafePath.FileExists(shown) ? $"/select,\"{shown}\"" : $"\"{shown}\"");
                 break;
-            case "openOther": OpenOther(Str("path")); break; // a copied folder or .html/.txt/.json, see OfferOther
+            case "openOther": OpenOther(Str("path")); break; // a copied folder, .html/.txt/.json or web address of one, see OfferOther
             case "shellOpen": // with the app Windows opens it with
                 if (FromRel(Str("rel")) is { } file && SafePath.FileExists(file)) OpenExternal(file);
                 break;
@@ -919,36 +908,87 @@ sealed class MainForm : Form
             return;
         }
 
-        // Hidden in the tray: a notification for what only offers, the window for what opens.
+        // Hidden in the tray: a notice on the desktop for what only offers, the window for what opens.
         if (!ClipboardPolicy.Raises(action)) return;
         if (ClipboardPolicy.Notifies(action))
         {
-            hintedClipboard = Message(Decide(force: true), true);
-            hintedPreview = preview;
-            var (title, body) = files.Count > 0
-                ? ($"剪貼簿裡有{(more ? "超過 " : " ")}{files.Count} 個可以開啟的檔案", "點這裡選擇")
-                : ("剪貼簿裡有可以開啟的檔案", $"{Path.GetFileName(found ?? matches[0])}（點這裡開啟）");
-            tray.ShowBalloonTip(6000, title, body, ToolTipIcon.None);
+            if (preview is null && files.Count > 1)
+            {
+                ShowDesktopToast($"剪貼簿裡有{(more ? "超過 " : " ")}{files.Count} 個可以開啟的檔案", "選擇",
+                    files.Select(f => new ToastChoice(Path.GetFileName(f), Path.GetDirectoryName(f) ?? "", () => { if (OpenAny(f)) ShowFromTray(activate: true); })).ToList());
+                return;
+            }
+            var asked = Message(Decide(force: true), true);
+            var (text, label) = files.Count > 0
+                ? ($"剪貼簿裡有{(more ? "超過 " : " ")}{files.Count} 個可以開啟的檔案", "選擇")
+                : ($"剪貼簿：{Path.GetFileName(found ?? matches[0])}", preview is null ? "開啟" : "預覽");
+            ShowDesktopToast(text, label, () =>
+            {
+                if (preview is not null && !settings.PictureDock) { ShowPictureWindow(preview); return; }
+                PostWhenReady(asked);
+                ShowFromTray(activate: true);
+            });
             return;
         }
         PostWhenReady(Message(action, false));
         ShowFromTray(activate: false);
     }
 
-    // A copied path, alone, of a folder or of a file MdClip does not show (.html, .txt, .json: IsOffered): only
-    // offered, to open in Explorer or the file's own app (OpenOther); in the page's notice, or the tray's while hidden.
+    // A copied path or web address, alone, of a folder or of a file MdClip does not show (.html, .txt, .json: IsOffered):
+    // only offered, to open in Explorer, the file's own app or the browser (OpenOther).
     void OfferOther(string text)
     {
+        var urls = PathFinder.OfferedUrls(text).Take(settings.ClipMax + 1).ToList();
+        if (urls is [var url]) { OfferOpen("網址", PathFinder.UrlName(url), url.AbsoluteUri); return; }
+        if (urls.Count > 1) { OfferUrls(urls); return; }
         if (Find(f => f.Resolve(text)) is not { } path || !(IsOffered(path) || SafePath.DirectoryExists(path))) return;
-        if (Visible) { PostWhenReady(new { type = "clipOther", path, name = Path.GetFileName(path.TrimEnd('\\')), dir = !IsOffered(path) }); return; }
-        hintedOther = path;
-        tray.ShowBalloonTip(6000, IsOffered(path) ? "剪貼簿裡有檔案" : "剪貼簿裡有資料夾", $"{Path.GetFileName(path.TrimEnd('\\'))}（點這裡打開）", ToolTipIcon.None);
+        OfferOpen(IsOffered(path) ? "檔案" : "資料夾", Path.GetFileName(path.TrimEnd('\\')), path);
     }
 
-    // A folder opens in Explorer, an offered file in its own app; nothing else (the page names the path).
+    // In the page's notice while MdClip is the window in use, otherwise in a notice at the bottom right of the
+    // desktop (DesktopToast), seen with MdClip minimized or behind.
+    void OfferOpen(string what, string name, string target)
+    {
+        if (ActiveForm == this) { PostWhenReady(new { type = "clipOther", path = target, name, what }); return; }
+        ShowDesktopToast($"剪貼簿裡有{what}：{name}", "打開", () => OpenOther(target));
+    }
+
+    // Several web addresses: to choose from, in the page's list or in the desktop notice's own menu (no main window).
+    void OfferUrls(List<Uri> urls)
+    {
+        var more = urls.Count > settings.ClipMax;
+        var items = urls.Take(settings.ClipMax).Select(u =>
+            new { path = u.AbsoluteUri, url = true, name = PathFinder.UrlName(u), where = PathFinder.UrlName(u) == u.Authority ? "" : u.Authority }).ToList();
+        if (ActiveForm == this) { PostWhenReady(new { type = "clipUrls", files = items, more }); return; }
+        ShowDesktopToast($"剪貼簿裡有{(more ? "超過 " : " ")}{items.Count} 個網址", "選擇",
+            items.Select(i => new ToastChoice(i.name, i.where, () => OpenOther(i.path))).ToList());
+    }
+
+    void ShowDesktopToast(string text, string action, Action run) => ShowDesktopToast(text, action, [new ToastChoice("", "", run)]);
+
+    // One notice on the desktop at a time, the newest, with its action also beside the pointer for a quick click.
+    // The button goes with the notice unless the pointer is on it; either one, used, closes both.
+    void ShowDesktopToast(string text, string action, IReadOnlyList<ToastChoice> choices)
+    {
+        desktopToast?.Close();
+        var chosen = choices.Select(c => c with { Run = () => { desktopToast?.Close(); c.Run(); } }).ToList();
+        var toast = desktopToast = new DesktopToast(theme, text, action, chosen);
+        var quick = new DesktopToast(theme, null, action, chosen);
+        toast.FormClosed += (_, _) =>
+        {
+            if (desktopToast == toast) desktopToast = null;
+            if (!quick.Bounds.Contains(Cursor.Position)) quick.Close();
+        };
+        toast.Show();
+        quick.Show();
+    }
+
+    // A folder opens in Explorer, an offered file in its own app, its web address in the browser; nothing else
+    // (the page names the path).
     static void OpenOther(string path)
     {
-        if (IsOffered(path) && SafePath.FileExists(path)) OpenExternal(path);
+        if (PathFinder.OfferedUrl(path) is { } url) OpenExternal(url.AbsoluteUri);
+        else if (IsOffered(path) && SafePath.FileExists(path)) OpenExternal(path);
         else if (SafePath.DirectoryExists(path)) Process.Start("explorer.exe", $"\"{path}\"");
     }
 

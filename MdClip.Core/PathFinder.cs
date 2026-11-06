@@ -66,6 +66,35 @@ public sealed class PathFinder(string root, IReadOnlyList<string> knownFiles, IR
 
     static string Unquote(string text) => text.Trim().Trim('"', '\'', '`');
 
+    // A web address inside a text ("固定網址:http://127.0.0.1:8777/?t=abc"). It ends at whitespace, quotes, brackets or
+    // full-width punctuation; CJK may be in the path (a file's name) but ends it right after an offered extension
+    // ("a.html這份"), and ends the host and the query, which are ASCII.
+    const string UrlEnd = @"\s""'`<>()\[\]{}|\\^";
+    const string UrlPathChar = "[^" + UrlEnd + @"?#　-〿＀-￯]";
+    static readonly Regex WebAddress = new(
+        @"(?<![A-Za-z0-9+.\-])https?://[A-Za-z0-9.\-:\[\]]+"
+        + "(?:/(?:" + UrlPathChar + @"*?\.(?:" + Paths.Alternation(Paths.OfferedExtensions) + ")(?![A-Za-z0-9_/.])|" + UrlPathChar + "*))?"
+        + "(?:[?#][^" + UrlEnd + @"\u0080-￿]*)?",
+        RegexOptions.IgnoreCase);
+
+    // The web addresses in the text worth offering, in text order, each once: anything on this computer (a local
+    // server), or elsewhere a file MdClip offers (Paths.IsOffered), which its path decides, not what follows it
+    // ("?v=2", "#top"). An ordinary link is not one.
+    public static IEnumerable<Uri> OfferedUrls(string text)
+    {
+        var seen = new HashSet<string>();
+        foreach (Match m in WebAddress.Matches(text))
+            if (Uri.TryCreate(m.Value.TrimEnd('.', ',', ';', ':', '!', '?'), UriKind.Absolute, out var uri)
+                && (uri.IsLoopback || Paths.IsOffered(uri.AbsolutePath)) && seen.Add(uri.AbsoluteUri))
+                yield return uri;
+    }
+
+    public static Uri? OfferedUrl(string text) => OfferedUrls(text).FirstOrDefault();
+
+    // How a web address is named to the user: its file, or where it is; never the query, which may hold a token.
+    public static string UrlName(Uri url) =>
+        Uri.UnescapeDataString(Path.GetFileName(url.AbsolutePath)) is { Length: > 0 } name ? name : url.Authority;
+
     // The file the text names (Path), or failing that the root-relative files whose name or path tail
     // it matches (Matches: one means open it, several means let the user pick).
     public (string? Path, List<string> Matches) Find(string text) => FindWithSource(Prepare(text)) is var f ? (f.Path, f.Matches) : default;

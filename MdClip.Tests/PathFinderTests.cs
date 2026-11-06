@@ -187,6 +187,65 @@ public sealed class PathFinderTests(Tree tree) : IClassFixture<Tree>
         Assert.Empty(matches);
     }
 
+    // ---------- web addresses of files that are only offered ----------
+
+    [Theory]
+    [InlineData("http://127.0.0.1:8792/會議紀錄.html")]
+    [InlineData("  \"https://example.com/a/b.HTM\"  ")]
+    [InlineData("https://example.com/data.json?v=2")]
+    [InlineData("https://example.com/notes.txt#top")]
+    [InlineData(":http://127.0.0.1:8777/?t=abc\r\n")]
+    [InlineData("：https://example.com/a.html")]
+    [InlineData("http://localhost:3000/")]
+    [InlineData("http://[::1]:8080/page")]
+    public void A_web_address_of_an_offered_file_or_on_this_computer_is_offered(string text) =>
+        Assert.NotNull(PathFinder.OfferedUrl(text));
+
+    [Theory]
+    [InlineData("\r\n固定網址:http://127.0.0.1:8777/?t=abc\r\n", "http://127.0.0.1:8777/?t=abc")]
+    [InlineData("看這裡 http://example.com/a.html 就有", "http://example.com/a.html")]
+    [InlineData("請看 http://example.com/a.html這份", "http://example.com/a.html")]
+    [InlineData("服務在 http://localhost:3000這裡", "http://localhost:3000/")]
+    [InlineData("見 http://127.0.0.1:8777/?t=abc。", "http://127.0.0.1:8777/?t=abc")]
+    [InlineData("(http://example.com/a.json).", "http://example.com/a.json")]
+    [InlineData("先看 https://example.com/readme 再看 http://localhost:3000/x", "http://localhost:3000/x")]
+    [InlineData("結尾 http://example.com/a.html.", "http://example.com/a.html")]
+    public void A_web_address_is_found_inside_a_text(string text, string expected) =>
+        Assert.Equal(expected, PathFinder.OfferedUrl(text)?.AbsoluteUri);
+
+    [Fact]
+    public void Every_web_address_in_a_text_is_found_once_in_order() =>
+        Assert.Equal(
+            ["http://localhost:3000/", "http://127.0.0.1:8777/?t=abc", "https://example.com/a.html"],
+            PathFinder.OfferedUrls("前端 http://localhost:3000/\n後端：http://127.0.0.1:8777/?t=abc，https://example.com/readme、https://example.com/a.html 又是 http://localhost:3000/")
+                .Select(u => u.AbsoluteUri));
+
+    [Theory]
+    [InlineData("http://127.0.0.1:8777/?t=abc", "127.0.0.1:8777")]
+    [InlineData("http://example.com/a/%E7%AF%84%E4%BE%8B.html?t=abc", "範例.html")]
+    public void A_web_address_is_named_without_its_query(string text, string name) =>
+        Assert.Equal(name, PathFinder.UrlName(new Uri(text)));
+
+    [Fact]
+    public void A_web_address_may_name_a_file_in_CJK() =>
+        Assert.Equal("/會議紀錄.html", Uri.UnescapeDataString(PathFinder.OfferedUrl("網址：http://127.0.0.1:8792/會議紀錄.html")!.AbsolutePath));
+
+    [Theory]
+    [InlineData("https://example.com/readme")]
+    [InlineData("https://example.com/a.md")]
+    [InlineData("https://example.com/a?file=b.html")]
+    [InlineData("http://localhost.example.com/")]
+    [InlineData("http://192.168.1.5:8080/")]
+    [InlineData(":")]
+    [InlineData("ftp://example.com/a.html")]
+    [InlineData("javascript:alert(1)//a.html")]
+    [InlineData("file:///C:/a.html")]
+    [InlineData("看這裡 https://example.com/readme 的說明")]
+    [InlineData("xhttp://127.0.0.1:8777/")]
+    [InlineData(@"E:\docs\a.html")]
+    public void Other_text_is_not_an_offered_web_address(string text) =>
+        Assert.Null(PathFinder.OfferedUrl(text));
+
     // ---------- folders to remember ----------
 
     [Fact]

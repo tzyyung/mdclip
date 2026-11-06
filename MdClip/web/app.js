@@ -698,6 +698,10 @@ const PALETTE_MODES = {
     placeholder: "剪貼簿裡的檔案：輸入文字篩選",
     foot: [[["↑", "↓"], "選擇"], [["Enter"], "開啟"], [["openInTab"]]],
   },
+  pickUrls: {
+    placeholder: "剪貼簿裡的網址：輸入文字篩選",
+    foot: [[["↑", "↓"], "選擇"], [["Enter"], "用瀏覽器開啟"]],
+  },
   text: {
     placeholder: "搜尋所有文件的內文",
     foot: [[["↑", "↓"], "選擇"], [["Enter"], "開啟並跳到那一處"], [["palette"], "改搜檔名"]],
@@ -760,7 +764,7 @@ const markIdx = (s, idx) => { const set = new Set(idx); return [...s].map((c, i)
 
 function updatePalette() {
   if (pal.mode === "text") { updateTextSearch(); return; }
-  if (pal.mode === "pick") { updatePick(); return; }
+  if (pal.mode === "pick" || pal.mode === "pickUrls") { updatePick(); return; }
   pal.note = "";
   const q = $("palette-input").value.trim();
   const items = [];
@@ -798,20 +802,23 @@ function renderPalette(message) {
   list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 }
 
-// Several files from one copy: list just those, in the order they were copied (more: the copy names
-// even more than the list holds).
+// Several files or web addresses (url) from one copy: list just those, in the order they were copied (more: the
+// copy names even more than the list holds).
 function openPick(files, more = false) {
   pal.pick = files;
   pal.pickMore = more;
-  openPalette("", "pick");
+  openPalette("", files[0]?.url ? "pickUrls" : "pick");
   updatePalette();
 }
 
 function updatePick() {
   const q = $("palette-input").value.trim().toLowerCase();
-  pal.note = pal.pickMore ? `剪貼簿裡的檔案超過 ${pal.pick.length} 個，只列出前 ${pal.pick.length} 個` : `剪貼簿裡有 ${pal.pick.length} 個檔案`;
-  pal.items = pal.pick.filter((f) => !q || (f.rel ?? f.path).toLowerCase().includes(q))
-    .map((f) => ({ kind: "pick", rel: f.rel, path: f.path, icon: fileIcon(f.path), title: esc(nameOf(f.path)), sub: esc(dirLabel(f.path)) }));
+  const what = pal.pick[0]?.url ? "網址" : "檔案";
+  pal.note = pal.pickMore ? `剪貼簿裡的${what}超過 ${pal.pick.length} 個，只列出前 ${pal.pick.length} 個` : `剪貼簿裡有 ${pal.pick.length} 個${what}`;
+  pal.items = pal.pick.filter((f) => !q || (f.url ? f.name + f.where : f.rel ?? f.path).toLowerCase().includes(q))
+    .map((f) => f.url
+      ? { kind: "pick", url: true, path: f.path, icon: "link", title: esc(f.name), sub: esc(f.where) }
+      : { kind: "pick", rel: f.rel, path: f.path, icon: fileIcon(f.path), title: esc(nameOf(f.path)), sub: esc(dirLabel(f.path)) });
   pal.sel = 0;
   renderPalette();
 }
@@ -827,7 +834,7 @@ function choose(it, newTab = false) {
   if (!it) return;
   if (it.kind === "path") { renderPalette(`<li class="hint">開啟中…</li>`); requestOpen(it.text); return; } // the palette shows the answer
   closePalette();
-  if (it.kind === "pick") openClipFile(it, newTab);
+  if (it.kind === "pick") { if (it.url) post({ type: "openOther", path: it.path }); else openClipFile(it, newTab); }
   else if (it.kind === "file") openDoc(it.rel, { newTab });
   else if (it.kind === "heading") scrollToHash(it.id, true);
   else if (it.kind === "hist") openHistory(it.path, it.scroll);
@@ -1892,8 +1899,11 @@ window.chrome?.webview?.addEventListener("message", (e) => {
     case "resolved": onResolved(m); break;
     case "clipboard": onClipboard(m); break;
     case "preview": showPreview(m.preview); break;
-    case "clipOther": // a copied folder, or a file MdClip does not show (.html, .txt, .json): Windows opens it
-      toast(`剪貼簿裡有${m.dir ? "資料夾" : "檔案"}：${m.name}`, { label: "打開", run: () => post({ type: "openOther", path: m.path }) }, "interact");
+    case "clipOther": // a copied folder, a file MdClip does not show (.html, .txt, .json) or its web address: Windows opens it
+      toast(`剪貼簿裡有${m.what}：${m.name}`, { label: "打開", run: () => post({ type: "openOther", path: m.path }) }, "interact");
+      break;
+    case "clipUrls":
+      toast(`剪貼簿裡有${m.more ? "超過 " : " "}${m.files.length} 個網址`, { label: "選擇", run: () => openPick(m.files, m.more) }, "interact");
       break;
     case "clipPick": openPick(m.files, m.more); break;
     case "docked": layout.picDock = true; showPictures(m.items, m.start); break;
